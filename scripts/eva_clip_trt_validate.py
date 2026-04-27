@@ -90,19 +90,22 @@ def build_engine(
     fp16: bool,
     workspace_mib: int,
 ) -> None:
-    base_cmd = [
+    # Static ONNX: input shape is already fixed in the model.
+    # TensorRT 10.x: use --memPoolSize instead of deprecated --workspace.
+    common = [
         trtexec_bin,
         f"--onnx={onnx_path}",
         f"--saveEngine={engine_path}",
-        f"--minShapes={input_name}:1x3x224x224",
-        f"--optShapes={input_name}:1x3x224x224",
-        f"--maxShapes={input_name}:1x3x224x224",
-        f"--workspace={workspace_mib}",
+        f"--memPoolSize=workspace:{workspace_mib}",
     ]
     if fp16:
-        base_cmd.append("--fp16")
+        common.append("--fp16")
 
-    candidate_cmds = [base_cmd + ["--builderOptimizationLevel=5"], base_cmd]
+    candidate_cmds = [
+        common + ["--builderOptimizationLevel=5"],
+        common,
+    ]
+
     last_err: Exception | None = None
     for idx, cmd in enumerate(candidate_cmds, start=1):
         try:
@@ -112,6 +115,7 @@ def build_engine(
             last_err = err
             if idx < len(candidate_cmds):
                 print("[WARN] Build command failed, retrying with a simpler trtexec flag set.")
+
     if last_err is not None:
         raise last_err
 
@@ -121,10 +125,10 @@ def benchmark_engine(
     engine_path: Path,
     input_name: str,
 ) -> None:
+    # Static engine already carries the input shape.
     cmd = [
         trtexec_bin,
         f"--loadEngine={engine_path}",
-        f"--shapes={input_name}:1x3x224x224",
         "--warmUp=200",
         "--iterations=100",
         "--duration=0",
