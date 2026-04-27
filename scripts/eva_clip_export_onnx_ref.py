@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset.")
     parser.add_argument(
+        "--no-constant-folding",
+        action="store_true",
+        help="Disable ONNX export constant folding.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -109,6 +114,50 @@ def export_onnx(model: torch.nn.Module, pixel_values_np: np.ndarray, onnx_path: 
     )
 
 
+def export_onnx_with_fallback(
+    model: torch.nn.Module,
+    pixel_values_np: np.ndarray,
+    onnx_path: Path,
+    opset: int,
+    device: torch.device,
+    enable_constant_folding: bool,
+) -> bool:
+    """Return whether constant folding was used in the final successful export."""
+    if not enable_constant_folding:
+        torch.onnx.export(
+            model,
+            torch.from_numpy(pixel_values_np).to(device=device, dtype=torch.float32),
+            str(onnx_path),
+            input_names=["pixel_values"],
+            output_names=["image_features"],
+            opset_version=opset,
+            do_constant_folding=False,
+            dynamic_axes=None,
+        )
+        return False
+
+    try:
+        export_onnx(model, pixel_values_np, onnx_path, opset, device=device)
+        return True
+    except RuntimeError as exc:
+        msg = str(exc)
+        # PyTorch 2.0.x may fail CUDA constant folding on EVA attention bias cat path.
+        if device.type == "cuda" and "Expected all tensors to be on the same device" in msg:
+            print("[WARN] CUDA constant folding failed during ONNX export; retrying with do_constant_folding=False.")
+            torch.onnx.export(
+                model,
+                torch.from_numpy(pixel_values_np).to(device=device, dtype=torch.float32),
+                str(onnx_path),
+                input_names=["pixel_values"],
+                output_names=["image_features"],
+                opset_version=opset,
+                do_constant_folding=False,
+                dynamic_axes=None,
+            )
+            return False
+        raise
+
+
 def maybe_run_ort_check(onnx_path: Path, pixel_values_np: np.ndarray, ref_np: np.ndarray) -> Dict[str, float] | None:
     try:
         import onnxruntime as ort  # type: ignore
@@ -159,7 +208,14 @@ def main() -> None:
         torch_latency_ms = (time.perf_counter() - t0) * 1000.0
     ref_np = ref.detach().cpu().numpy().astype(np.float32, copy=False)
 
-    export_onnx(model, pixel_values_np, onnx_path, args.opset, device=device)
+    used_constant_folding = export_onnx_with_fallback(
+        model,
+        pixel_values_np,
+        onnx_path,
+        args.opset,
+        device=device,
+        enable_constant_folding=not args.no_constant_folding,
+    )
 
     np.savez(ref_path, pixel_values=pixel_values_np, image_features=ref_np)
 
@@ -175,6 +231,7 @@ def main() -> None:
         "torch_latency_ms": float(torch_latency_ms),
         "onnx_path": str(onnx_path),
         "ref_path": str(ref_path),
+        "onnx_constant_folding": bool(used_constant_folding),
         "ort_metrics": ort_metrics,
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
