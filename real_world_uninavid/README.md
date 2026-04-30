@@ -47,18 +47,22 @@ The node publishes `/cmd_vel` and subscribes to:
   stop and wait before requesting next inference frame.
 - `~forward_distance_m` default `0.50`
 - `~turn_angle_deg` default `30.0`
+- `~max_consecutive_turn_actions` default `7`
+- `~max_turn_run_deg` default `210.0`
+- `~max_total_turn_deg` default `360.0`
 - `~loop_rate_hz` default `30.0`
 - `~max_camera_age_s` default `1.0`
 - `~resize_before_model` default `false`
 - `~model_input_size` default `224`
 - `~cache_reset_interval` default `0`
 - `~feat_cache_max_frames` default `64`
-- `~long_feat_cache_max_tokens` default `0`
+- `~long_feat_cache_max_tokens` default `256`
 - `~empty_cuda_cache_every` default `0`
 - `~memory_log_interval` default `1`
 - `~debug_save_enabled` default `true`
 - `~debug_dir` default `real_world_uninavid/debug`
 - `~debug_keep_last_images` default `1000`
+- `~debug_save_images` default `false`
 - `~debug_save_raw_images` default `false`
 - `~camera_launch_cmd` default empty
 - `~shutdown_on_stop` default `true`
@@ -77,3 +81,13 @@ The node executes one atomic action at a time, but keeps a pending action queue
 from Uni-NaVid's four-action prediction. After each completed action it requests
 a new inference after stop-settle, and requires a newer frame than the pre-stop
 frame to reduce blur. A leading `stop` prediction interrupts immediately.
+
+Debug behavior:
+
+- `events.jsonl` is written when `~debug_save_enabled:=true`; it includes each inference result and memory/cache snapshots.
+- Input images are not written by default. Enable `~debug_save_images:=true` for short debug runs, and `~debug_save_raw_images:=true` only if full-resolution raw frames are needed.
+
+Turn safety:
+
+- Repeated `left`/`right` predictions are stopped by action count, turn-run angle, and total absolute turn angle.
+- Set a safety value to `0` only for controlled tests where external emergency stop is active.

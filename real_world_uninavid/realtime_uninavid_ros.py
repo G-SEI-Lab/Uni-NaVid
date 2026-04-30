@@ -35,7 +35,12 @@ RAD2DEG = 180.0 / math.pi
 ACTION_RE = re.compile(r"\b(forward|left|right|stop)\b", re.IGNORECASE)
 
 DEFAULT_MODEL_PATH = "model_zoo/uninavid-7b-full-224-video-fps-1-grid-2"
-DEFAULT_INSTRUCTION = "move forward to the chair in the center of frame and stop."
+DEFAULT_INSTRUCTION = "Turn back to find the traffic cone, then move to it and stop."
+
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    pass
 
 
 @dataclass
@@ -164,10 +169,12 @@ class DebugRecorder:
         enabled: bool,
         root_dir: str,
         keep_last_images: int,
+        save_images: bool,
         save_raw_images: bool,
     ) -> None:
         self.enabled = enabled
         self.keep_last_images = max(keep_last_images, 0)
+        self.save_images = save_images
         self.save_raw_images = save_raw_images
         self._lock = threading.Lock()
         self.root = Path(root_dir).expanduser()
@@ -184,16 +191,22 @@ class DebugRecorder:
         model_input_image,
         result: InferenceResult,
         instruction: str,
+        memory: Optional[dict] = None,
     ) -> None:
         if not self.enabled:
             return
         with self._lock:
             raw_path = self.root / f"infer_{generation:06d}_raw.jpg"
             input_path = self.root / f"infer_{generation:06d}_input.jpg"
-            if self.save_raw_images:
-                cv2.imwrite(str(raw_path), raw_image)
-            cv2.imwrite(str(input_path), model_input_image)
-            if self.keep_last_images > 0:
+            raw_name = None
+            input_name = None
+            if self.save_images:
+                if self.save_raw_images:
+                    cv2.imwrite(str(raw_path), raw_image)
+                    raw_name = raw_path.name
+                cv2.imwrite(str(input_path), model_input_image)
+                input_name = input_path.name
+            if self.save_images and self.keep_last_images > 0:
                 old_generation = generation - self.keep_last_images
                 if old_generation > 0:
                     old_raw = self.root / f"infer_{old_generation:06d}_raw.jpg"
@@ -216,8 +229,9 @@ class DebugRecorder:
                 "actions": result.actions,
                 "inference_s": result.inference_s,
                 "error": result.error,
-                "raw_image": raw_path.name if self.save_raw_images else None,
-                "model_input_image": input_path.name,
+                "raw_image": raw_name,
+                "model_input_image": input_name,
+                "memory": memory,
                 "ts": time.time(),
             }
             with self.events_file.open("a", encoding="utf-8") as f:
@@ -436,12 +450,7 @@ class UniNaVidInferenceWorker:
             return None
         return None
 
-    def _log_memory_snapshot(self, frame_shape) -> None:
-        if self._memory_log_interval <= 0:
-            return
-        if self._inference_count == 0 or self._inference_count % self._memory_log_interval != 0:
-            return
-
+    def _memory_snapshot(self, frame_shape) -> dict:
         rss = self._rss_mb()
         cuda_alloc = cuda_reserved = None
         try:
@@ -460,16 +469,32 @@ class UniNaVidInferenceWorker:
         except Exception:
             pass
 
+        return {
+            "count": self._inference_count,
+            "rss_mb": round(rss, 1) if rss is not None else None,
+            "cuda_alloc_mb": round(cuda_alloc, 1) if cuda_alloc is not None else None,
+            "cuda_reserved_mb": round(cuda_reserved, 1) if cuda_reserved is not None else None,
+            "feat_frames": feat_frames,
+            "long_tokens": long_tokens,
+            "frame_shape": list(frame_shape) if frame_shape is not None else None,
+        }
+
+    def _log_memory_snapshot(self, snapshot: dict) -> None:
+        if self._memory_log_interval <= 0:
+            return
+        if self._inference_count == 0 or self._inference_count % self._memory_log_interval != 0:
+            return
+
         rospy.loginfo(
             "[uninavid] mem count=%d rss=%sMB cuda_alloc=%sMB cuda_reserved=%sMB "
             "feat_frames=%s long_tokens=%s frame_shape=%s",
-            self._inference_count,
-            "%.1f" % rss if rss is not None else "n/a",
-            "%.1f" % cuda_alloc if cuda_alloc is not None else "n/a",
-            "%.1f" % cuda_reserved if cuda_reserved is not None else "n/a",
-            str(feat_frames) if feat_frames is not None else "n/a",
-            str(long_tokens) if long_tokens is not None else "n/a",
-            str(tuple(frame_shape)) if frame_shape is not None else "n/a",
+            int(snapshot.get("count", 0)),
+            str(snapshot.get("rss_mb")) if snapshot.get("rss_mb") is not None else "n/a",
+            str(snapshot.get("cuda_alloc_mb")) if snapshot.get("cuda_alloc_mb") is not None else "n/a",
+            str(snapshot.get("cuda_reserved_mb")) if snapshot.get("cuda_reserved_mb") is not None else "n/a",
+            str(snapshot.get("feat_frames")) if snapshot.get("feat_frames") is not None else "n/a",
+            str(snapshot.get("long_tokens")) if snapshot.get("long_tokens") is not None else "n/a",
+            str(tuple(snapshot["frame_shape"])) if snapshot.get("frame_shape") is not None else "n/a",
         )
 
     def _run(self) -> None:
@@ -545,7 +570,8 @@ class UniNaVidInferenceWorker:
             self._store_result(result)
             self._maybe_trim_feat_cache()
             self._maybe_empty_cuda_cache()
-            self._log_memory_snapshot(getattr(frame.image_bgr, "shape", None))
+            memory_snapshot = self._memory_snapshot(getattr(frame.image_bgr, "shape", None))
+            self._log_memory_snapshot(memory_snapshot)
 
             self._debug.record_inference(
                 generation=generation,
@@ -555,6 +581,7 @@ class UniNaVidInferenceWorker:
                 model_input_image=model_input_image,
                 result=result,
                 instruction=self._instruction,
+                memory=memory_snapshot,
             )
 
             if error:
@@ -628,7 +655,9 @@ class UniNaVidRealtimeNode:
         self.feedback_wait_timeout_s = float(rospy.get_param("~feedback_wait_timeout_s", 1.0))
         self.allow_open_loop_fallback = bool(rospy.get_param("~allow_open_loop_fallback", False))
         self.turn_progress_use_abs_gyro = bool(rospy.get_param("~turn_progress_use_abs_gyro", True))
-        self.max_consecutive_turn_actions = int(rospy.get_param("~max_consecutive_turn_actions", 3))
+        self.max_consecutive_turn_actions = int(rospy.get_param("~max_consecutive_turn_actions", 30))
+        self.max_turn_run_deg = float(rospy.get_param("~max_turn_run_deg", 210.0))
+        self.max_total_turn_deg = float(rospy.get_param("~max_total_turn_deg", 360.0))
 
         self.body_vel_deadband = float(rospy.get_param("~body_vel_deadband", 0.01))
         self.gyro_deadband = float(rospy.get_param("~gyro_deadband", 0.01))
@@ -655,6 +684,7 @@ class UniNaVidRealtimeNode:
         default_debug_dir = str(REPO_ROOT / "real_world_uninavid" / "debug")
         self.debug_dir = str(rospy.get_param("~debug_dir", default_debug_dir))
         self.debug_keep_last_images = int(rospy.get_param("~debug_keep_last_images", 1000))
+        self.debug_save_images = bool(rospy.get_param("~debug_save_images", False))
         self.debug_save_raw_images = bool(rospy.get_param("~debug_save_raw_images", False))
 
         self._lock = threading.Lock()
@@ -679,11 +709,14 @@ class UniNaVidRealtimeNode:
         self._post_action_min_seq = 0
         self._next_action_not_before = 0.0
         self._consecutive_turn_actions = 0
+        self._turn_run_abs_deg = 0.0
+        self._total_abs_turn_deg = 0.0
 
         self._debug = DebugRecorder(
             self.debug_save_enabled,
             self.debug_dir,
             self.debug_keep_last_images,
+            self.debug_save_images,
             self.debug_save_raw_images,
         )
         self._start_camera_if_configured()
@@ -730,7 +763,8 @@ class UniNaVidRealtimeNode:
             "[uninavid] ready camera=%s cmd=%s body_vel=%s gyro=%s "
             "period=%.2fs motion=%.2fs settle=%.2fs "
             "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s "
-            "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d",
+            "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d "
+            "turn_safety=count:%d run:%.1fdeg total:%.1fdeg",
             self.camera_topic,
             self.cmd_vel_topic,
             self.body_velocity_topic,
@@ -748,6 +782,9 @@ class UniNaVidRealtimeNode:
             self.cache_reset_interval,
             self.feat_cache_max_frames,
             self.long_feat_cache_max_tokens,
+            self.max_consecutive_turn_actions,
+            self.max_turn_run_deg,
+            self.max_total_turn_deg,
         )
         if not self.resize_before_model:
             rospy.loginfo(
@@ -759,7 +796,12 @@ class UniNaVidRealtimeNode:
             )
         self._publish_state("ready")
         if self.debug_save_enabled:
-            rospy.loginfo("[uninavid] debug outputs: %s", self.debug_dir)
+            rospy.loginfo(
+                "[uninavid] debug outputs: %s images=%s raw_images=%s",
+                self.debug_dir,
+                str(self.debug_save_images),
+                str(self.debug_save_raw_images),
+            )
 
     def _start_camera_if_configured(self) -> None:
         if not self.camera_launch_cmd:
@@ -872,14 +914,34 @@ class UniNaVidRealtimeNode:
 
     def _start_action_locked(self, name: str, now_ros: rospy.Time, now_mono: float) -> None:
         if name in {"left", "right"}:
-            if self._consecutive_turn_actions >= self.max_consecutive_turn_actions:
+            if (
+                self.max_consecutive_turn_actions > 0
+                and self._consecutive_turn_actions >= self.max_consecutive_turn_actions
+            ):
                 self._request_stop_locked(
                     f"safety stop: consecutive turn actions >= {self.max_consecutive_turn_actions}"
+                )
+                return
+            projected_turn_run = self._turn_run_abs_deg + self.turn_angle_deg
+            if self.max_turn_run_deg > 0.0 and projected_turn_run > self.max_turn_run_deg:
+                self._request_stop_locked(
+                    "safety stop: turn run would exceed "
+                    f"{self.max_turn_run_deg:.1f}deg "
+                    f"(current={self._turn_run_abs_deg:.1f}deg next={self.turn_angle_deg:.1f}deg)"
+                )
+                return
+            projected_total_turn = self._total_abs_turn_deg + self.turn_angle_deg
+            if self.max_total_turn_deg > 0.0 and projected_total_turn > self.max_total_turn_deg:
+                self._request_stop_locked(
+                    "safety stop: total turn would exceed "
+                    f"{self.max_total_turn_deg:.1f}deg "
+                    f"(current={self._total_abs_turn_deg:.1f}deg next={self.turn_angle_deg:.1f}deg)"
                 )
                 return
             self._consecutive_turn_actions += 1
         else:
             self._consecutive_turn_actions = 0
+            self._turn_run_abs_deg = 0.0
 
         if name == "forward":
             action = RunningAction(
@@ -909,6 +971,10 @@ class UniNaVidRealtimeNode:
 
     def _finish_action_locked(self, now_mono: float, action: RunningAction, reason: str) -> None:
         elapsed = max(now_mono - action.start_monotonic, 0.0)
+        if action.name in {"left", "right"}:
+            turn_delta = action.progress if action.progress > 0.0 else action.target
+            self._turn_run_abs_deg += turn_delta
+            self._total_abs_turn_deg += turn_delta
         settle_floor = action.start_monotonic + self.action_period_s
         settle_extra = now_mono + self.post_action_settle_s
         self._settle_until = max(settle_floor, settle_extra)
@@ -931,6 +997,8 @@ class UniNaVidRealtimeNode:
             progress=round(action.progress, 3),
             elapsed_s=round(elapsed, 3),
             reason=reason,
+            turn_run_deg=round(self._turn_run_abs_deg, 1),
+            total_turn_deg=round(self._total_abs_turn_deg, 1),
         )
         self._debug.record_event(
             {
@@ -939,6 +1007,8 @@ class UniNaVidRealtimeNode:
                 "reason": reason,
                 "progress": action.progress,
                 "elapsed_s": elapsed,
+                "turn_run_deg": self._turn_run_abs_deg,
+                "total_turn_deg": self._total_abs_turn_deg,
                 "ts": time.time(),
             }
         )
