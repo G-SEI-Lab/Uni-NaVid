@@ -115,13 +115,15 @@ def _parse_actions(raw_actions, max_actions: int) -> List[str]:
 class LatestImageBuffer:
     """Only keep one latest frame to avoid memory buildup."""
 
-    def __init__(self, topic: str) -> None:
+    def __init__(self, topic: str, decode_max_hz: float = 0.0) -> None:
         self._bridge = CvBridge()
         self._lock = threading.Lock()
         self._image_bgr = None
         self._stamp = rospy.Time(0.0)
         self._seq = 0
         self._monotonic = 0.0
+        self._decode_min_period_s = 1.0 / decode_max_hz if decode_max_hz > 0.0 else 0.0
+        self._last_decode_monotonic = 0.0
         self._sub = rospy.Subscriber(
             topic,
             RosImage,
@@ -131,6 +133,14 @@ class LatestImageBuffer:
         )
 
     def _image_cb(self, msg: RosImage) -> None:
+        now = time.monotonic()
+        if (
+            self._decode_min_period_s > 0.0
+            and now - self._last_decode_monotonic < self._decode_min_period_s
+        ):
+            return
+        self._last_decode_monotonic = now
+
         try:
             image_bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as exc:  # noqa: BLE001
@@ -292,6 +302,11 @@ class DebugRecorder:
             return
         with self._lock:
             self._write_event_locked(event)
+
+    def record_config(self, config: dict) -> None:
+        if not self.enabled:
+            return
+        self.record_event({"type": "config", "config": config, "ts": time.time()})
 
 
 class UniNaVidInferenceWorker:
@@ -546,6 +561,21 @@ class UniNaVidInferenceWorker:
             str(tuple(snapshot["frame_shape"])) if snapshot.get("frame_shape") is not None else "n/a",
         )
 
+    def _record_inference_start(self, request: InferenceRequest, frame: FrameSnapshot) -> None:
+        self._debug.record_event(
+            {
+                "type": "inference_start",
+                "request_reason": request.reason,
+                "request_min_seq": request.min_seq,
+                "next_generation": self._generation + 1,
+                "frame_seq": frame.seq,
+                "frame_age_s": frame.age_s,
+                "frame_shape": list(frame.image_bgr.shape),
+                "memory": self._memory_snapshot(getattr(frame.image_bgr, "shape", None)),
+                "ts": time.time(),
+            }
+        )
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             if not self._request_event.wait(timeout=0.1):
@@ -581,6 +611,7 @@ class UniNaVidInferenceWorker:
                 frame.seq,
                 frame.age_s,
             )
+            self._record_inference_start(request, frame)
             try:
                 result_dict = self._agent.act(
                     {
@@ -655,6 +686,7 @@ class UniNaVidRealtimeNode:
         self.instruction = str(rospy.get_param("~instruction", DEFAULT_INSTRUCTION))
 
         self.camera_topic = str(rospy.get_param("~camera_topic", "/camera_down/color/image_raw"))
+        self.camera_decode_max_hz = float(rospy.get_param("~camera_decode_max_hz", 5.0))
         self.camera_launch_cmd = str(rospy.get_param("~camera_launch_cmd", "")).strip()
         self.camera_launch_startup_s = float(rospy.get_param("~camera_launch_startup_s", 2.0))
         self.cmd_vel_topic = str(rospy.get_param("~cmd_vel_topic", "/cmd_vel"))
@@ -719,6 +751,10 @@ class UniNaVidRealtimeNode:
         self.speed_limit_topic = str(rospy.get_param("~speed_limit_topic", "/elevator/speed_limit"))
         self.shutdown_on_stop = bool(rospy.get_param("~shutdown_on_stop", True))
         self.stop_hold_s = float(rospy.get_param("~stop_hold_s", 0.3))
+        self.inference_only = bool(rospy.get_param("~inference_only", False))
+        self.inference_only_period_s = float(rospy.get_param("~inference_only_period_s", 1.0))
+        self.max_runtime_s = float(rospy.get_param("~max_runtime_s", 0.0))
+        self.max_inferences = int(rospy.get_param("~max_inferences", 0))
 
         self.resize_before_model = bool(rospy.get_param("~resize_before_model", False))
         self.model_input_size = int(rospy.get_param("~model_input_size", 224))
@@ -776,7 +812,33 @@ class UniNaVidRealtimeNode:
         )
         self._start_camera_if_configured()
 
-        self._image_buffer = LatestImageBuffer(self.camera_topic)
+        self._debug.record_config(
+            {
+                "model_path": self.model_path,
+                "instruction": self.instruction,
+                "camera_topic": self.camera_topic,
+                "camera_decode_max_hz": self.camera_decode_max_hz,
+                "cmd_vel_topic": self.cmd_vel_topic,
+                "body_velocity_topic": self.body_velocity_topic,
+                "gyro_topic": self.gyro_topic,
+                "inference_only": self.inference_only,
+                "inference_only_period_s": self.inference_only_period_s,
+                "max_runtime_s": self.max_runtime_s,
+                "max_inferences": self.max_inferences,
+                "action_period_s": self.action_period_s,
+                "action_motion_s": self.action_motion_s,
+                "forward_distance_m": self.forward_distance_m,
+                "turn_angle_deg": self.turn_angle_deg,
+                "resize_before_model": self.resize_before_model,
+                "cache_reset_interval": self.cache_reset_interval,
+                "feat_cache_max_frames": self.feat_cache_max_frames,
+                "long_feat_cache_max_tokens": self.long_feat_cache_max_tokens,
+                "debug_save_images": self.debug_save_images,
+                "debug_save_raw_images": self.debug_save_raw_images,
+            }
+        )
+
+        self._image_buffer = LatestImageBuffer(self.camera_topic, self.camera_decode_max_hz)
         self._cmd_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=20)
         self._state_pub = rospy.Publisher("~state", String, queue_size=10, latch=True)
 
@@ -815,12 +877,13 @@ class UniNaVidRealtimeNode:
         self._worker.start()
 
         rospy.loginfo(
-            "[uninavid] ready camera=%s cmd=%s body_vel=%s gyro=%s "
+            "[uninavid] ready camera=%s decode_max_hz=%.2f cmd=%s body_vel=%s gyro=%s "
             "period=%.2fs motion=%.2fs settle=%.2fs "
-            "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s "
+            "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s inference_only=%s "
             "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d "
             "turn_safety=count:%d run:%.1fdeg total:%.1fdeg",
             self.camera_topic,
+            self.camera_decode_max_hz,
             self.cmd_vel_topic,
             self.body_velocity_topic,
             self.gyro_topic,
@@ -834,6 +897,7 @@ class UniNaVidRealtimeNode:
             str(self.resize_before_model),
             self.model_input_size,
             str(self.debug_save_enabled),
+            str(self.inference_only),
             self.cache_reset_interval,
             self.feat_cache_max_frames,
             self.long_feat_cache_max_tokens,
@@ -955,7 +1019,10 @@ class UniNaVidRealtimeNode:
         with self._lock:
             self._awaiting_post_action_inference = False
             self._post_action_inference_requested = False
-            if result.actions and result.actions[0] == "stop":
+            if self.inference_only:
+                self._pending_actions.clear()
+                self._current_action = None
+            elif result.actions and result.actions[0] == "stop":
                 self._pending_actions.clear()
                 self._current_action = None
                 self._request_stop_locked("model predicted stop")
@@ -969,6 +1036,20 @@ class UniNaVidRealtimeNode:
             inference_s=round(result.inference_s, 3),
             frame_seq=result.frame_seq,
             reason=result.request_reason,
+        )
+        if self.max_inferences > 0 and result.generation >= self.max_inferences:
+            with self._lock:
+                self._request_stop_locked(f"max_inferences reached: {self.max_inferences}")
+
+    def _step_inference_only(self) -> None:
+        now_mono = time.monotonic()
+        if self._worker.is_busy():
+            return
+        if now_mono - self._last_inference_request_time < self.inference_only_period_s:
+            return
+        self._request_inference(
+            reason="inference_only",
+            min_seq=self._image_buffer.latest_seq(),
         )
 
     def _start_action_locked(self, name: str, now_ros: rospy.Time, now_mono: float) -> None:
@@ -1234,13 +1315,24 @@ class UniNaVidRealtimeNode:
         self._wait_for_camera()
         self._request_inference(reason="startup", min_seq=self._image_buffer.latest_seq())
 
+        started = time.monotonic()
         rate = rospy.Rate(max(self.loop_rate_hz, 1.0))
         while not rospy.is_shutdown():
             self._consume_inference()
-            cmd = self._step_control()
+            if self.inference_only:
+                self._step_inference_only()
+                cmd = Twist()
+            else:
+                cmd = self._step_control()
             self._cmd_pub.publish(cmd)
 
             with self._lock:
+                if (
+                    not self._stop_requested
+                    and self.max_runtime_s > 0.0
+                    and time.monotonic() - started >= self.max_runtime_s
+                ):
+                    self._request_stop_locked(f"max_runtime_s reached: {self.max_runtime_s:.1f}")
                 should_shutdown = (
                     self._stop_requested
                     and self.shutdown_on_stop

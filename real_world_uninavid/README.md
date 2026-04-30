@@ -52,8 +52,13 @@ The node publishes `/cmd_vel` and subscribes to:
 - `~max_total_turn_deg` default `360.0`
 - `~loop_rate_hz` default `30.0`
 - `~max_camera_age_s` default `1.0`
+- `~camera_decode_max_hz` default `5.0`
 - `~resize_before_model` default `false`
 - `~model_input_size` default `224`
+- `~inference_only` default `false`
+- `~inference_only_period_s` default `1.0`
+- `~max_runtime_s` default `0`
+- `~max_inferences` default `0`
 - `~cache_reset_interval` default `0`
 - `~feat_cache_max_frames` default `64`
 - `~long_feat_cache_max_tokens` default `256`
@@ -91,6 +96,12 @@ Debug behavior:
 - Input images are not written by default. Enable `~debug_save_images:=true` for short debug runs.
 - Image writes use atomic JPEG replacement and are capped by `~debug_image_max_count` by default to reduce I/O pressure.
 - Use `~debug_save_raw_images:=true` only if full-resolution raw frames are needed.
+
+Crash isolation:
+
+- Start `real_world_uninavid/jetson_debug_monitor.sh` before testing to capture `tegrastats`, kernel logs, memory, USB, and process snapshots.
+- Use `~inference_only:=true` to run camera + model without publishing robot motion commands.
+- Use `~camera_decode_max_hz` to avoid converting every camera frame in Python; one fresh frame per action cycle is enough for the current control loop.
 
 Turn safety:
 
