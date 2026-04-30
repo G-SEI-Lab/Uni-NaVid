@@ -35,7 +35,7 @@ RAD2DEG = 180.0 / math.pi
 ACTION_RE = re.compile(r"\b(forward|left|right|stop)\b", re.IGNORECASE)
 
 DEFAULT_MODEL_PATH = "model_zoo/uninavid-7b-full-224-video-fps-1-grid-2"
-DEFAULT_INSTRUCTION = "move forward to the target and stop."
+DEFAULT_INSTRUCTION = "move forward to the chair in the center of frame and stop."
 
 
 @dataclass
@@ -504,7 +504,7 @@ class UniNaVidRealtimeNode:
         self.model_path = _resolve_repo_path(str(rospy.get_param("~model_path", DEFAULT_MODEL_PATH)))
         self.instruction = str(rospy.get_param("~instruction", DEFAULT_INSTRUCTION))
 
-        self.camera_topic = str(rospy.get_param("~camera_topic", "/camera_up/color/image_raw"))
+        self.camera_topic = str(rospy.get_param("~camera_topic", "/camera_down/color/image_raw"))
         self.camera_launch_cmd = str(rospy.get_param("~camera_launch_cmd", "")).strip()
         self.camera_launch_startup_s = float(rospy.get_param("~camera_launch_startup_s", 2.0))
         self.cmd_vel_topic = str(rospy.get_param("~cmd_vel_topic", "/cmd_vel"))
