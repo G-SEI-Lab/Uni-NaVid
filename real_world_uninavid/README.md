@@ -52,11 +52,14 @@ The node publishes `/cmd_vel` and subscribes to:
 - `~resize_before_model` default `false`
 - `~model_input_size` default `224`
 - `~cache_reset_interval` default `0`
-- `~feat_cache_max_frames` default `0`
+- `~feat_cache_max_frames` default `64`
+- `~long_feat_cache_max_tokens` default `0`
 - `~empty_cuda_cache_every` default `0`
+- `~memory_log_interval` default `1`
 - `~debug_save_enabled` default `true`
 - `~debug_dir` default `real_world_uninavid/debug`
 - `~debug_keep_last_images` default `1000`
+- `~debug_save_raw_images` default `false`
 - `~camera_launch_cmd` default empty
 - `~shutdown_on_stop` default `true`
 

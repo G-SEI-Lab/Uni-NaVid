@@ -159,9 +159,16 @@ class LatestImageBuffer:
 
 
 class DebugRecorder:
-    def __init__(self, enabled: bool, root_dir: str, keep_last_images: int) -> None:
+    def __init__(
+        self,
+        enabled: bool,
+        root_dir: str,
+        keep_last_images: int,
+        save_raw_images: bool,
+    ) -> None:
         self.enabled = enabled
         self.keep_last_images = max(keep_last_images, 0)
+        self.save_raw_images = save_raw_images
         self._lock = threading.Lock()
         self.root = Path(root_dir).expanduser()
         self.events_file = self.root / "events.jsonl"
@@ -183,7 +190,8 @@ class DebugRecorder:
         with self._lock:
             raw_path = self.root / f"infer_{generation:06d}_raw.jpg"
             input_path = self.root / f"infer_{generation:06d}_input.jpg"
-            cv2.imwrite(str(raw_path), raw_image)
+            if self.save_raw_images:
+                cv2.imwrite(str(raw_path), raw_image)
             cv2.imwrite(str(input_path), model_input_image)
             if self.keep_last_images > 0:
                 old_generation = generation - self.keep_last_images
@@ -191,7 +199,8 @@ class DebugRecorder:
                     old_raw = self.root / f"infer_{old_generation:06d}_raw.jpg"
                     old_input = self.root / f"infer_{old_generation:06d}_input.jpg"
                     try:
-                        old_raw.unlink(missing_ok=True)
+                        if self.save_raw_images:
+                            old_raw.unlink(missing_ok=True)
                         old_input.unlink(missing_ok=True)
                     except Exception:
                         pass
@@ -207,7 +216,7 @@ class DebugRecorder:
                 "actions": result.actions,
                 "inference_s": result.inference_s,
                 "error": result.error,
-                "raw_image": raw_path.name,
+                "raw_image": raw_path.name if self.save_raw_images else None,
                 "model_input_image": input_path.name,
                 "ts": time.time(),
             }
@@ -238,6 +247,8 @@ class UniNaVidInferenceWorker:
         cache_reset_interval: int,
         empty_cuda_cache_every: int,
         feat_cache_max_frames: int,
+        long_feat_cache_max_tokens: int,
+        memory_log_interval: int,
     ) -> None:
         self._agent = agent
         self._frame_buffer = frame_buffer
@@ -251,6 +262,8 @@ class UniNaVidInferenceWorker:
         self._cache_reset_interval = max(cache_reset_interval, 0)
         self._empty_cuda_cache_every = max(empty_cuda_cache_every, 0)
         self._feat_cache_max_frames = max(feat_cache_max_frames, 0)
+        self._long_feat_cache_max_tokens = max(long_feat_cache_max_tokens, 0)
+        self._memory_log_interval = max(memory_log_interval, 0)
         self._official_short_side, self._official_crop = self._resolve_official_image_size()
 
         self._request_event = threading.Event()
@@ -381,11 +394,23 @@ class UniNaVidInferenceWorker:
             if feat_cache is None:
                 return
             if feat_cache.shape[0] > self._feat_cache_max_frames:
-                core.feat_cache = feat_cache[-self._feat_cache_max_frames :, :, :]
+                core.feat_cache = feat_cache[-self._feat_cache_max_frames :, :, :].detach().clone()
                 rospy.logwarn_throttle(
                     10.0,
                     "[uninavid] trimmed feat_cache to last %d frames",
                     self._feat_cache_max_frames,
+                )
+            long_feat_cache = getattr(core, "long_feat_cache", None)
+            if (
+                self._long_feat_cache_max_tokens > 0
+                and long_feat_cache is not None
+                and long_feat_cache.shape[0] > self._long_feat_cache_max_tokens
+            ):
+                core.long_feat_cache = long_feat_cache[-self._long_feat_cache_max_tokens :, :].detach().clone()
+                rospy.logwarn_throttle(
+                    10.0,
+                    "[uninavid] trimmed long_feat_cache to last %d tokens",
+                    self._long_feat_cache_max_tokens,
                 )
         except Exception as exc:  # noqa: BLE001
             rospy.logwarn_throttle(5.0, "[uninavid] feat_cache trim failed: %s", exc)
@@ -398,6 +423,54 @@ class UniNaVidInferenceWorker:
                 torch.cuda.empty_cache()
             except Exception:
                 pass
+
+    @staticmethod
+    def _rss_mb() -> Optional[float]:
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = float(line.split()[1])
+                        return kb / 1024.0
+        except Exception:
+            return None
+        return None
+
+    def _log_memory_snapshot(self, frame_shape) -> None:
+        if self._memory_log_interval <= 0:
+            return
+        if self._inference_count == 0 or self._inference_count % self._memory_log_interval != 0:
+            return
+
+        rss = self._rss_mb()
+        cuda_alloc = cuda_reserved = None
+        try:
+            cuda_alloc = torch.cuda.memory_allocated() / (1024.0 * 1024.0)
+            cuda_reserved = torch.cuda.memory_reserved() / (1024.0 * 1024.0)
+        except Exception:
+            pass
+
+        feat_frames = long_tokens = None
+        try:
+            core = self._agent.model.get_model()
+            feat_cache = getattr(core, "feat_cache", None)
+            long_feat_cache = getattr(core, "long_feat_cache", None)
+            feat_frames = int(feat_cache.shape[0]) if feat_cache is not None else 0
+            long_tokens = int(long_feat_cache.shape[0]) if long_feat_cache is not None else 0
+        except Exception:
+            pass
+
+        rospy.loginfo(
+            "[uninavid] mem count=%d rss=%sMB cuda_alloc=%sMB cuda_reserved=%sMB "
+            "feat_frames=%s long_tokens=%s frame_shape=%s",
+            self._inference_count,
+            "%.1f" % rss if rss is not None else "n/a",
+            "%.1f" % cuda_alloc if cuda_alloc is not None else "n/a",
+            "%.1f" % cuda_reserved if cuda_reserved is not None else "n/a",
+            str(feat_frames) if feat_frames is not None else "n/a",
+            str(long_tokens) if long_tokens is not None else "n/a",
+            str(tuple(frame_shape)) if frame_shape is not None else "n/a",
+        )
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -472,6 +545,7 @@ class UniNaVidInferenceWorker:
             self._store_result(result)
             self._maybe_trim_feat_cache()
             self._maybe_empty_cuda_cache()
+            self._log_memory_snapshot(getattr(frame.image_bgr, "shape", None))
 
             self._debug.record_inference(
                 generation=generation,
@@ -573,12 +647,15 @@ class UniNaVidRealtimeNode:
 
         self.cache_reset_interval = int(rospy.get_param("~cache_reset_interval", 0))
         self.empty_cuda_cache_every = int(rospy.get_param("~empty_cuda_cache_every", 0))
-        self.feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 0))
+        self.feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 64))
+        self.long_feat_cache_max_tokens = int(rospy.get_param("~long_feat_cache_max_tokens", 256))
+        self.memory_log_interval = int(rospy.get_param("~memory_log_interval", 1))
 
         self.debug_save_enabled = bool(rospy.get_param("~debug_save_enabled", True))
         default_debug_dir = str(REPO_ROOT / "real_world_uninavid" / "debug")
         self.debug_dir = str(rospy.get_param("~debug_dir", default_debug_dir))
         self.debug_keep_last_images = int(rospy.get_param("~debug_keep_last_images", 1000))
+        self.debug_save_raw_images = bool(rospy.get_param("~debug_save_raw_images", False))
 
         self._lock = threading.Lock()
         self._pending_actions: Deque[str] = deque()
@@ -607,6 +684,7 @@ class UniNaVidRealtimeNode:
             self.debug_save_enabled,
             self.debug_dir,
             self.debug_keep_last_images,
+            self.debug_save_raw_images,
         )
         self._start_camera_if_configured()
 
@@ -643,6 +721,8 @@ class UniNaVidRealtimeNode:
             cache_reset_interval=self.cache_reset_interval,
             empty_cuda_cache_every=self.empty_cuda_cache_every,
             feat_cache_max_frames=self.feat_cache_max_frames,
+            long_feat_cache_max_tokens=self.long_feat_cache_max_tokens,
+            memory_log_interval=self.memory_log_interval,
         )
         self._worker.start()
 
@@ -650,7 +730,7 @@ class UniNaVidRealtimeNode:
             "[uninavid] ready camera=%s cmd=%s body_vel=%s gyro=%s "
             "period=%.2fs motion=%.2fs settle=%.2fs "
             "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s "
-            "cache_reset_interval=%d feat_cache_max_frames=%d",
+            "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d",
             self.camera_topic,
             self.cmd_vel_topic,
             self.body_velocity_topic,
@@ -667,6 +747,7 @@ class UniNaVidRealtimeNode:
             str(self.debug_save_enabled),
             self.cache_reset_interval,
             self.feat_cache_max_frames,
+            self.long_feat_cache_max_tokens,
         )
         if not self.resize_before_model:
             rospy.loginfo(
