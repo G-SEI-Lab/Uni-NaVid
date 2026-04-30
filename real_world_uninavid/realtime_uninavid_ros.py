@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -171,16 +172,54 @@ class DebugRecorder:
         keep_last_images: int,
         save_images: bool,
         save_raw_images: bool,
+        image_interval: int,
+        image_max_count: int,
+        fsync_events: bool,
     ) -> None:
         self.enabled = enabled
         self.keep_last_images = max(keep_last_images, 0)
         self.save_images = save_images
         self.save_raw_images = save_raw_images
+        self.image_interval = max(image_interval, 1)
+        self.image_max_count = max(image_max_count, 0)
+        self.fsync_events = fsync_events
         self._lock = threading.Lock()
         self.root = Path(root_dir).expanduser()
         self.events_file = self.root / "events.jsonl"
         if self.enabled:
             self.root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _write_jpeg_atomic(path: Path, image, quality: int = 90) -> bool:
+        if image is None or not hasattr(image, "shape"):
+            return False
+        try:
+            if len(image.shape) < 2 or image.shape[0] <= 0 or image.shape[1] <= 0:
+                return False
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                image,
+                [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+            )
+            if not ok:
+                return False
+            tmp_path = path.with_name(f"{path.name}.tmp")
+            tmp_path.write_bytes(encoded.tobytes())
+            tmp_path.replace(path)
+            return True
+        except Exception:
+            try:
+                path.with_name(f"{path.name}.tmp").unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+
+    def _write_event_locked(self, event: dict) -> None:
+        with self.events_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            if self.fsync_events:
+                f.flush()
+                os.fsync(f.fileno())
 
     def record_inference(
         self,
@@ -200,13 +239,24 @@ class DebugRecorder:
             input_path = self.root / f"infer_{generation:06d}_input.jpg"
             raw_name = None
             input_name = None
-            if self.save_images:
+            image_write_ok = None
+            should_save_images = (
+                self.save_images
+                and generation % self.image_interval == 0
+                and (self.image_max_count <= 0 or generation <= self.image_max_count)
+            )
+            if should_save_images:
+                image_write_ok = True
                 if self.save_raw_images:
-                    cv2.imwrite(str(raw_path), raw_image)
-                    raw_name = raw_path.name
-                cv2.imwrite(str(input_path), model_input_image)
-                input_name = input_path.name
-            if self.save_images and self.keep_last_images > 0:
+                    if self._write_jpeg_atomic(raw_path, raw_image):
+                        raw_name = raw_path.name
+                    else:
+                        image_write_ok = False
+                if self._write_jpeg_atomic(input_path, model_input_image):
+                    input_name = input_path.name
+                else:
+                    image_write_ok = False
+            if should_save_images and self.keep_last_images > 0:
                 old_generation = generation - self.keep_last_images
                 if old_generation > 0:
                     old_raw = self.root / f"infer_{old_generation:06d}_raw.jpg"
@@ -231,18 +281,17 @@ class DebugRecorder:
                 "error": result.error,
                 "raw_image": raw_name,
                 "model_input_image": input_name,
+                "image_write_ok": image_write_ok,
                 "memory": memory,
                 "ts": time.time(),
             }
-            with self.events_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._write_event_locked(event)
 
     def record_event(self, event: dict) -> None:
         if not self.enabled:
             return
         with self._lock:
-            with self.events_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._write_event_locked(event)
 
 
 class UniNaVidInferenceWorker:
@@ -686,6 +735,9 @@ class UniNaVidRealtimeNode:
         self.debug_keep_last_images = int(rospy.get_param("~debug_keep_last_images", 1000))
         self.debug_save_images = bool(rospy.get_param("~debug_save_images", False))
         self.debug_save_raw_images = bool(rospy.get_param("~debug_save_raw_images", False))
+        self.debug_image_interval = int(rospy.get_param("~debug_image_interval", 1))
+        self.debug_image_max_count = int(rospy.get_param("~debug_image_max_count", 16))
+        self.debug_fsync_events = bool(rospy.get_param("~debug_fsync_events", True))
 
         self._lock = threading.Lock()
         self._pending_actions: Deque[str] = deque()
@@ -718,6 +770,9 @@ class UniNaVidRealtimeNode:
             self.debug_keep_last_images,
             self.debug_save_images,
             self.debug_save_raw_images,
+            self.debug_image_interval,
+            self.debug_image_max_count,
+            self.debug_fsync_events,
         )
         self._start_camera_if_configured()
 
@@ -797,10 +852,14 @@ class UniNaVidRealtimeNode:
         self._publish_state("ready")
         if self.debug_save_enabled:
             rospy.loginfo(
-                "[uninavid] debug outputs: %s images=%s raw_images=%s",
+                "[uninavid] debug outputs: %s images=%s raw_images=%s image_interval=%d "
+                "image_max_count=%d fsync_events=%s",
                 self.debug_dir,
                 str(self.debug_save_images),
                 str(self.debug_save_raw_images),
+                self.debug_image_interval,
+                self.debug_image_max_count,
+                str(self.debug_fsync_events),
             )
 
     def _start_camera_if_configured(self) -> None:

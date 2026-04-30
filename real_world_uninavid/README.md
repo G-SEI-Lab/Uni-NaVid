@@ -64,6 +64,9 @@ The node publishes `/cmd_vel` and subscribes to:
 - `~debug_keep_last_images` default `1000`
 - `~debug_save_images` default `false`
 - `~debug_save_raw_images` default `false`
+- `~debug_image_interval` default `1`
+- `~debug_image_max_count` default `16`
+- `~debug_fsync_events` default `true`
 - `~camera_launch_cmd` default empty
 - `~shutdown_on_stop` default `true`
 
@@ -85,7 +88,9 @@ frame to reduce blur. A leading `stop` prediction interrupts immediately.
 Debug behavior:
 
 - `events.jsonl` is written when `~debug_save_enabled:=true`; it includes each inference result and memory/cache snapshots.
-- Input images are not written by default. Enable `~debug_save_images:=true` for short debug runs, and `~debug_save_raw_images:=true` only if full-resolution raw frames are needed.
+- Input images are not written by default. Enable `~debug_save_images:=true` for short debug runs.
+- Image writes use atomic JPEG replacement and are capped by `~debug_image_max_count` by default to reduce I/O pressure.
+- Use `~debug_save_raw_images:=true` only if full-resolution raw frames are needed.
 
 Turn safety:
 
