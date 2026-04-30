@@ -39,21 +39,38 @@ The node publishes `/cmd_vel` and subscribes to:
 
 ## Key Parameters
 
+- `~action_period_s` default `1.0`:
+  one action cycle frequency, including motion + settle.
+- `~action_motion_s` default `0.7`:
+  used to derive default motion speed.
+- `~post_action_settle_s` default `0.2`:
+  stop and wait before requesting next inference frame.
 - `~forward_distance_m` default `0.50`
 - `~turn_angle_deg` default `30.0`
-- `~action_duration_s` default `0.7`
 - `~loop_rate_hz` default `30.0`
 - `~max_camera_age_s` default `1.0`
+- `~resize_before_model` default `false`
+- `~model_input_size` default `224`
+- `~cache_reset_interval` default `0`
+- `~feat_cache_max_frames` default `0`
+- `~empty_cuda_cache_every` default `0`
+- `~debug_save_enabled` default `true`
+- `~debug_dir` default `real_world_uninavid/debug`
+- `~debug_keep_last_images` default `1000`
 - `~camera_launch_cmd` default empty
 - `~shutdown_on_stop` default `true`
 
+Preprocess behavior:
+
+- Recommended (default): `~resize_before_model:=false`, keep raw frame input and let official `image_processor.preprocess` do resize + center crop.
+- Optional compatibility fallback: set `~resize_before_model:=true` to force square resize before model input (deviates from official).
+
 Default speeds are derived from the target duration:
 
-- forward speed: `forward_distance_m / action_duration_s`
-- turn speed: `turn_angle_deg / action_duration_s`
+- forward speed: `forward_distance_m / action_motion_s`
+- turn speed: `turn_angle_deg / action_motion_s`
 
 The node executes one atomic action at a time, but keeps a pending action queue
 from Uni-NaVid's four-action prediction. After each completed action it requests
-a new inference on the latest camera frame. If the new inference returns while an
-older action is still executing, only the pending queue is replaced; a leading
-`stop` prediction interrupts immediately.
+a new inference after stop-settle, and requires a newer frame than the pre-stop
+frame to reduce blur. A leading `stop` prediction interrupts immediately.
