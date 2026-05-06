@@ -100,6 +100,7 @@ Debug behavior:
 Crash isolation:
 
 - Start `real_world_uninavid/jetson_debug_monitor.sh` before testing to capture `tegrastats`, kernel logs, memory, USB, and process snapshots.
+- For valid `kernel_tail.log`, run monitor with root permission (or passwordless `sudo dmesg`): `sudo -E bash real_world_uninavid/jetson_debug_monitor.sh ...`.
 - Use `~inference_only:=true` to run camera + model without publishing robot motion commands.
 - Use `~camera_decode_max_hz` to avoid converting every camera frame in Python; one fresh frame per action cycle is enough for the current control loop.
 

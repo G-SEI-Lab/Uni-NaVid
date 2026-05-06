@@ -15,6 +15,23 @@ run_bg() {
   echo "$!" >> "$OUT_DIR/pids.txt"
 }
 
+can_sudo_nopass() {
+  sudo -n true >/dev/null 2>&1
+}
+
+start_kernel_tail() {
+  if [ "$(id -u)" -eq 0 ]; then
+    run_shell_bg kernel_tail "dmesg -wT"
+    return
+  fi
+  if can_sudo_nopass; then
+    run_shell_bg kernel_tail "sudo -n dmesg -wT"
+    return
+  fi
+  echo "[monitor] WARN: cannot read kernel ring buffer without root or passwordless sudo" | tee "$OUT_DIR/kernel_tail.log"
+  echo "[monitor] WARN: run monitor as root or configure sudo -n for dmesg" >> "$OUT_DIR/kernel_tail.log"
+}
+
 run_shell_bg() {
   local name="$1"
   shift
@@ -50,7 +67,7 @@ fi
 run_bg vmstat vmstat -t 1
 run_shell_bg proc_summary 'while true; do date; free -m; ps -eo pid,ppid,stat,pcpu,pmem,rss,vsz,comm,args --sort=-rss | head -n 30; sleep 1; done'
 run_shell_bg disk_io 'while true; do date; cat /proc/diskstats; sleep 2; done'
-run_shell_bg kernel_tail 'dmesg -wT'
+start_kernel_tail
 run_shell_bg ros_node_info 'while true; do date; rosnode list 2>&1; rostopic hz /camera_down/color/image_raw -w 3 2>&1 | head -n 20; sleep 5; done'
 
 cat > "$OUT_DIR/stop_monitor.sh" <<'EOF'
