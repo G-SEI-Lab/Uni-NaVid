@@ -47,9 +47,6 @@ The node publishes `/cmd_vel` and subscribes to:
   stop and wait before requesting next inference frame.
 - `~forward_distance_m` default `0.50`
 - `~turn_angle_deg` default `30.0`
-- `~max_consecutive_turn_actions` default `7`
-- `~max_turn_run_deg` default `210.0`
-- `~max_total_turn_deg` default `360.0`
 - `~loop_rate_hz` default `30.0`
 - `~max_camera_age_s` default `1.0`
 - `~camera_decode_max_hz` default `5.0`
@@ -103,8 +100,3 @@ Crash isolation:
 - For valid `kernel_tail.log`, run monitor with root permission (or passwordless `sudo dmesg`): `sudo -E bash real_world_uninavid/jetson_debug_monitor.sh ...`.
 - Use `~inference_only:=true` to run camera + model without publishing robot motion commands.
 - Use `~camera_decode_max_hz` to avoid converting every camera frame in Python; one fresh frame per action cycle is enough for the current control loop.
-
-Turn safety:
-
-- Repeated `left`/`right` predictions are stopped by action count, turn-run angle, and total absolute turn angle.
-- Set a safety value to `0` only for controlled tests where external emergency stop is active.

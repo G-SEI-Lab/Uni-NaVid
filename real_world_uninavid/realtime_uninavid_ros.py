@@ -736,9 +736,6 @@ class UniNaVidRealtimeNode:
         self.feedback_wait_timeout_s = float(rospy.get_param("~feedback_wait_timeout_s", 1.0))
         self.allow_open_loop_fallback = bool(rospy.get_param("~allow_open_loop_fallback", False))
         self.turn_progress_use_abs_gyro = bool(rospy.get_param("~turn_progress_use_abs_gyro", True))
-        self.max_consecutive_turn_actions = int(rospy.get_param("~max_consecutive_turn_actions", 30))
-        self.max_turn_run_deg = float(rospy.get_param("~max_turn_run_deg", 210.0))
-        self.max_total_turn_deg = float(rospy.get_param("~max_total_turn_deg", 360.0))
 
         self.body_vel_deadband = float(rospy.get_param("~body_vel_deadband", 0.01))
         self.gyro_deadband = float(rospy.get_param("~gyro_deadband", 0.01))
@@ -796,7 +793,6 @@ class UniNaVidRealtimeNode:
         self._post_action_inference_requested = False
         self._post_action_min_seq = 0
         self._next_action_not_before = 0.0
-        self._consecutive_turn_actions = 0
         self._turn_run_abs_deg = 0.0
         self._total_abs_turn_deg = 0.0
 
@@ -880,8 +876,7 @@ class UniNaVidRealtimeNode:
             "[uninavid] ready camera=%s decode_max_hz=%.2f cmd=%s body_vel=%s gyro=%s "
             "period=%.2fs motion=%.2fs settle=%.2fs "
             "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s inference_only=%s "
-            "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d "
-            "turn_safety=count:%d run:%.1fdeg total:%.1fdeg",
+            "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d",
             self.camera_topic,
             self.camera_decode_max_hz,
             self.cmd_vel_topic,
@@ -901,9 +896,6 @@ class UniNaVidRealtimeNode:
             self.cache_reset_interval,
             self.feat_cache_max_frames,
             self.long_feat_cache_max_tokens,
-            self.max_consecutive_turn_actions,
-            self.max_turn_run_deg,
-            self.max_total_turn_deg,
         )
         if not self.resize_before_model:
             rospy.loginfo(
@@ -1053,34 +1045,7 @@ class UniNaVidRealtimeNode:
         )
 
     def _start_action_locked(self, name: str, now_ros: rospy.Time, now_mono: float) -> None:
-        if name in {"left", "right"}:
-            if (
-                self.max_consecutive_turn_actions > 0
-                and self._consecutive_turn_actions >= self.max_consecutive_turn_actions
-            ):
-                self._request_stop_locked(
-                    f"safety stop: consecutive turn actions >= {self.max_consecutive_turn_actions}"
-                )
-                return
-            projected_turn_run = self._turn_run_abs_deg + self.turn_angle_deg
-            if self.max_turn_run_deg > 0.0 and projected_turn_run > self.max_turn_run_deg:
-                self._request_stop_locked(
-                    "safety stop: turn run would exceed "
-                    f"{self.max_turn_run_deg:.1f}deg "
-                    f"(current={self._turn_run_abs_deg:.1f}deg next={self.turn_angle_deg:.1f}deg)"
-                )
-                return
-            projected_total_turn = self._total_abs_turn_deg + self.turn_angle_deg
-            if self.max_total_turn_deg > 0.0 and projected_total_turn > self.max_total_turn_deg:
-                self._request_stop_locked(
-                    "safety stop: total turn would exceed "
-                    f"{self.max_total_turn_deg:.1f}deg "
-                    f"(current={self._total_abs_turn_deg:.1f}deg next={self.turn_angle_deg:.1f}deg)"
-                )
-                return
-            self._consecutive_turn_actions += 1
-        else:
-            self._consecutive_turn_actions = 0
+        if name not in {"left", "right"}:
             self._turn_run_abs_deg = 0.0
 
         if name == "forward":
