@@ -686,7 +686,7 @@ class UniNaVidRealtimeNode:
         self.instruction = str(rospy.get_param("~instruction", DEFAULT_INSTRUCTION))
 
         self.camera_topic = str(rospy.get_param("~camera_topic", "/camera_down/color/image_raw"))
-        self.camera_decode_max_hz = float(rospy.get_param("~camera_decode_max_hz", 5.0))
+        self.camera_decode_max_hz = float(rospy.get_param("~camera_decode_max_hz", 1.0))
         self.camera_launch_cmd = str(rospy.get_param("~camera_launch_cmd", "")).strip()
         self.camera_launch_startup_s = float(rospy.get_param("~camera_launch_startup_s", 2.0))
         self.cmd_vel_topic = str(rospy.get_param("~cmd_vel_topic", "/cmd_vel"))
@@ -697,9 +697,9 @@ class UniNaVidRealtimeNode:
         self.max_actions = int(rospy.get_param("~max_actions", 4))
         self.max_camera_age_s = float(rospy.get_param("~max_camera_age_s", 1.0))
         self.camera_wait_timeout_s = float(rospy.get_param("~camera_wait_timeout_s", 10.0))
-        self.idle_reinfer_period_s = float(rospy.get_param("~idle_reinfer_period_s", 1.0))
+        self.idle_reinfer_period_s = float(rospy.get_param("~idle_reinfer_period_s", 1.8))
         self.min_inference_request_period_s = float(
-            rospy.get_param("~min_inference_request_period_s", 0.3)
+            rospy.get_param("~min_inference_request_period_s", 1.5)
         )
         self.request_frame_wait_timeout_s = float(
             rospy.get_param("~request_frame_wait_timeout_s", 2.0)
@@ -711,7 +711,7 @@ class UniNaVidRealtimeNode:
         self.action_period_s = float(rospy.get_param("~action_period_s", 1.0))
         self.action_motion_s = float(rospy.get_param("~action_motion_s", 0.7))
         self.post_action_settle_s = float(rospy.get_param("~post_action_settle_s", 0.2))
-        self.forward_distance_m = float(rospy.get_param("~forward_distance_m", 0.50))
+        self.forward_distance_m = float(rospy.get_param("~forward_distance_m", 0.25))
         self.turn_angle_deg = float(rospy.get_param("~turn_angle_deg", 30.0))
         self.forward_speed_mps = float(
             rospy.get_param(
@@ -758,8 +758,8 @@ class UniNaVidRealtimeNode:
 
         self.cache_reset_interval = int(rospy.get_param("~cache_reset_interval", 0))
         self.empty_cuda_cache_every = int(rospy.get_param("~empty_cuda_cache_every", 0))
-        self.feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 64))
-        self.long_feat_cache_max_tokens = int(rospy.get_param("~long_feat_cache_max_tokens", 256))
+        self.feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 0))
+        self.long_feat_cache_max_tokens = int(rospy.get_param("~long_feat_cache_max_tokens", 0))
         self.memory_log_interval = int(rospy.get_param("~memory_log_interval", 1))
 
         self.debug_save_enabled = bool(rospy.get_param("~debug_save_enabled", True))
