@@ -1,10 +1,10 @@
-# Real-time Uni-NaVid ROS runner
+# Real-time Uni-NaVid ROS 运行器
 
-This directory contains the online runner for using Uni-NaVid on the robot dog.
+本目录包含用于在机器狗上运行 Uni-NaVid 的在线部署脚本。
 
-## Prerequisites
+## 前置条件
 
-Start these outside this node unless you pass `~camera_launch_cmd`:
+除非通过 `~camera_launch_cmd` 让本节点自动启动相机，否则需要在本节点外部先启动以下服务：
 
 ```bash
 # ZSL SDK server in Docker, then ROS bridge on Orin.
@@ -14,10 +14,9 @@ python3 tmp/elevator-robot/scripts/zsibot/client_in_orin.py
 # /camera_up/color/image_raw
 ```
 
-## Run
+## 运行
 
-Serial runner. This version waits for each post-action inference before
-starting the next action, which is useful for testing and debugging:
+串行运行器。该版本会等待每个动作后的推理完成，再开始下一个动作，适合测试和调试：
 
 ```bash
 python3 real_world_uninavid/realtime_uninavid_ros.py \
@@ -25,7 +24,7 @@ python3 real_world_uninavid/realtime_uninavid_ros.py \
   _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
 ```
 
-Pipelined runner. This version overlaps action execution with model inference:
+流水线运行器。该版本会让动作执行和模型推理并行进行：
 
 ```bash
 python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
@@ -33,7 +32,7 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
 ```
 
-Optional camera launch example:
+可选的相机自动启动示例：
 
 ```bash
 python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
@@ -41,94 +40,90 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _instruction:="move forward to the target and stop."
 ```
 
-The node publishes `/cmd_vel` and subscribes to:
+节点发布 `/cmd_vel`，并订阅：
 
 - `/camera_up/color/image_raw`
 - `/zsl/body_velocity`
 - `/zsl/body_gyro`
-- `/elevator/e_stop` when `~use_estop:=true`
+- 当 `~use_estop:=true` 时订阅 `/elevator/e_stop`
 
-## Key Parameters
+## 关键参数
 
-- `~action_period_s` default `1.0`:
-  one action cycle frequency, including motion + settle.
-- `~action_motion_s` default `0.7`:
-  used to derive default motion speed.
-- `~post_action_settle_s` default `0.2`:
-  stop and wait before requesting next inference frame.
-- `~forward_distance_m` default `0.50`
-- `~turn_angle_deg` default `30.0`
-- `~loop_rate_hz` default `30.0`
-- `~max_camera_age_s` default `1.0`
-- `~camera_decode_max_hz` default `5.0`
-- `~resize_before_model` default `false`
-- `~model_input_size` default `224`
-- `~inference_only` default `false`
-- `~inference_only_period_s` default `1.0`
-- `~max_runtime_s` default `0`
-- `~max_inferences` default `0`
-- `~cache_reset_interval` default `0`
-- `~feat_cache_max_frames` default `64`
-- `~long_feat_cache_max_tokens` default `256`
-- `~empty_cuda_cache_every` default `0`
-- `~memory_log_interval` default `1`
-- `~debug_save_enabled` default `true`
-- `~debug_dir` default `real_world_uninavid/debug`
-- `~debug_keep_last_images` default `1000`
-- `~debug_save_images` default `false`
-- `~debug_save_raw_images` default `false`
-- `~debug_image_interval` default `1`
-- `~debug_image_max_count` default `16`
-- `~debug_fsync_events` default `true`
-- `~camera_launch_cmd` default empty
-- `~shutdown_on_stop` default `true`
+- `~action_period_s` 默认 `1.0`：
+  一个动作周期的总时长，包括运动和停稳。
+- `~action_motion_s` 默认 `0.7`：
+  用于推导默认运动速度。
+- `~post_action_settle_s` 默认 `0.2`：
+  动作后停止等待，再请求下一帧推理图像。
+- `~forward_distance_m` 默认 `0.50`
+- `~turn_angle_deg` 默认 `30.0`
+- `~loop_rate_hz` 默认 `30.0`
+- `~max_camera_age_s` 默认 `1.0`
+- `~camera_decode_max_hz` 默认 `5.0`
+- `~resize_before_model` 默认 `false`
+- `~model_input_size` 默认 `224`
+- `~inference_only` 默认 `false`
+- `~inference_only_period_s` 默认 `1.0`
+- `~max_runtime_s` 默认 `0`
+- `~max_inferences` 默认 `0`
+- `~cache_reset_interval` 默认 `0`
+- `~feat_cache_max_frames` 默认 `64`
+- `~long_feat_cache_max_tokens` 默认 `256`
+- `~empty_cuda_cache_every` 默认 `0`
+- `~memory_log_interval` 默认 `1`
+- `~debug_save_enabled` 默认 `true`
+- `~debug_dir` 默认 `real_world_uninavid/debug`
+- `~debug_keep_last_images` 默认 `1000`
+- `~debug_save_images` 默认 `false`
+- `~debug_save_raw_images` 默认 `false`
+- `~debug_image_interval` 默认 `1`
+- `~debug_image_max_count` 默认 `16`
+- `~debug_fsync_events` 默认 `true`
+- `~camera_launch_cmd` 默认空
+- `~shutdown_on_stop` 默认 `true`
 
-Pipeline-specific default differences in `realtime_uninavid_ros_pipeline.py`:
+`realtime_uninavid_ros_pipeline.py` 的流水线版本默认值差异：
 
-- `~action_motion_s` default `1.0`
-- `~forward_distance_m` default `0.25`
-- `~turn_angle_deg` default `30.0`
-- `~camera_decode_max_hz` default `5.0`
-- `~min_inference_request_period_s` default `0.0`
-- `~still_frame_wait_timeout_s` default `0.25`
-- `~distance_tolerance_m`, `~distance_stop_lead_m`, `~turn_tolerance_deg`, and `~turn_stop_lead_deg` default `0.0`
+- `~action_motion_s` 默认 `1.0`
+- `~forward_distance_m` 默认 `0.25`
+- `~turn_angle_deg` 默认 `30.0`
+- `~camera_decode_max_hz` 默认 `5.0`
+- `~min_inference_request_period_s` 默认 `0.0`
+- `~still_frame_wait_timeout_s` 默认 `0.25`
+- `~distance_tolerance_m`、`~distance_stop_lead_m`、`~turn_tolerance_deg` 和 `~turn_stop_lead_deg` 默认 `0.0`
 
-Pipeline behavior:
+流水线行为：
 
-- The first inference seeds the pending action queue.
-- Each action is controlled as one unit: forward `0.25m` in `1.0s`, or turn `30deg` in `1.0s`, unless speed or unit parameters are overridden.
-- After an action finishes, the node briefly publishes zero velocity for `~post_action_settle_s`, captures one fresh still frame, and submits that copied frame to the inference worker.
-- The robot does not wait for that inference if there are queued actions. It continues with the remaining queue after the still-frame capture window.
-- Each inference request records the completed-action count as an action anchor. When the result returns, actions that correspond to already completed or currently executing action slots are discarded.
-- The remaining predicted actions replace the current pending queue. The currently running action is not interrupted.
-- A leading `stop` after stale-action trimming stops immediately when idle, or is queued to stop after the current action when moving.
+- 第一次推理用于初始化待执行动作队列。
+- 每个动作按一个动作单元控制：前进 `0.25m` 用 `1.0s`，或旋转 `30deg` 用 `1.0s`，除非覆盖速度或动作单元参数。
+- 每个动作完成后，节点会在 `~post_action_settle_s` 内短暂发布零速度，抓取一张新的静止帧，并把复制后的图像提交给推理线程。
+- 如果队列中仍有待执行动作，机器人不会等待这次推理完成；静止帧捕获窗口结束后继续执行剩余动作。
+- 每个推理请求都会记录已完成动作数，作为该帧对应的动作锚点。推理结果返回时，会丢弃已经完成或当前正在执行的动作槽对应的预测动作。
+- 剩余预测动作会替换当前待执行队列。当前正在执行的动作不会被打断。
+- 过时动作裁剪后，如果首个有效动作是 `stop`，空闲时会立即停止；运动中则排队到当前动作结束后停止。
 
-Preprocess behavior:
+预处理行为：
 
-- Recommended (default): `~resize_before_model:=false`, keep raw frame input and let official `image_processor.preprocess` do resize + center crop.
-- Optional compatibility fallback: set `~resize_before_model:=true` to force square resize before model input (deviates from official).
+- 推荐方式（默认）：`~resize_before_model:=false`，保留原始相机帧输入，由官方 `image_processor.preprocess` 完成 resize 和 center crop。
+- 可选兼容方案：设置 `~resize_before_model:=true`，在送入模型前强制做方形 resize（这会偏离官方预处理）。
 
-Default speeds are derived from the target duration:
+默认速度由目标动作时长推导：
 
-- forward speed: `forward_distance_m / action_motion_s`
-- turn speed: `turn_angle_deg / action_motion_s`
+- 前进速度：`forward_distance_m / action_motion_s`
+- 旋转速度：`turn_angle_deg / action_motion_s`
 
-The serial runner executes one atomic action at a time, but keeps a pending
-action queue from Uni-NaVid's four-action prediction. After each completed
-action it requests a new inference after stop-settle, and requires a newer frame
-than the pre-stop frame to reduce blur. A leading `stop` prediction interrupts
-immediately.
+串行运行器每次只执行一个原子动作，但会保留 Uni-NaVid 四动作预测中的待执行动作队列。每个动作完成后，它会在 stop-settle 后请求一次新推理，并要求图像比停止前更新，以降低运动模糊影响。首个 `stop` 预测会立即中断执行。
 
-Debug behavior:
+调试行为：
 
-- `events.jsonl` is written when `~debug_save_enabled:=true`; it includes each inference result and memory/cache snapshots.
-- Input images are not written by default. Enable `~debug_save_images:=true` for short debug runs.
-- Image writes use atomic JPEG replacement and are capped by `~debug_image_max_count` by default to reduce I/O pressure.
-- Use `~debug_save_raw_images:=true` only if full-resolution raw frames are needed.
+- 当 `~debug_save_enabled:=true` 时写入 `events.jsonl`；其中包含每次推理结果以及内存/cache 快照。
+- 默认不保存输入图像。短时间调试时可启用 `~debug_save_images:=true`。
+- 图像写入使用原子 JPEG 替换；默认由 `~debug_image_max_count` 限制保存数量，以降低 I/O 压力。
+- 只有需要完整分辨率原始帧时，才使用 `~debug_save_raw_images:=true`。
 
-Crash isolation:
+崩溃隔离：
 
-- Start `real_world_uninavid/jetson_debug_monitor.sh` before testing to capture `tegrastats`, kernel logs, memory, USB, and process snapshots.
-- For valid `kernel_tail.log`, run monitor with root permission (or passwordless `sudo dmesg`): `sudo -E bash real_world_uninavid/jetson_debug_monitor.sh ...`.
-- Use `~inference_only:=true` to run camera + model without publishing robot motion commands.
-- Use `~camera_decode_max_hz` to avoid converting every camera frame in Python; one fresh frame per action cycle is enough for the current control loop.
+- 测试前启动 `real_world_uninavid/jetson_debug_monitor.sh`，用于捕获 `tegrastats`、内核日志、内存、USB 和进程快照。
+- 为了得到有效的 `kernel_tail.log`，请用 root 权限运行 monitor（或配置免密码 `sudo dmesg`）：`sudo -E bash real_world_uninavid/jetson_debug_monitor.sh ...`。
+- 使用 `~inference_only:=true` 可以只运行相机和模型，不发布机器人运动控制指令。
+- 使用 `~camera_decode_max_hz` 可以避免在 Python 中转换每一帧相机图像；当前控制循环中每个动作周期一张新帧即可。
