@@ -16,8 +16,19 @@ python3 tmp/elevator-robot/scripts/zsibot/client_in_orin.py
 
 ## Run
 
+Serial runner. This version waits for each post-action inference before
+starting the next action, which is useful for testing and debugging:
+
 ```bash
 python3 real_world_uninavid/realtime_uninavid_ros.py \
+  _instruction:="move forward to the target and stop." \
+  _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
+```
+
+Pipelined runner. This version overlaps action execution with model inference:
+
+```bash
+python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _instruction:="move forward to the target and stop." \
   _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
 ```
@@ -25,7 +36,7 @@ python3 real_world_uninavid/realtime_uninavid_ros.py \
 Optional camera launch example:
 
 ```bash
-python3 real_world_uninavid/realtime_uninavid_ros.py \
+python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _camera_launch_cmd:="roslaunch realsense2_camera rs_camera.launch" \
   _instruction:="move forward to the target and stop."
 ```
@@ -72,6 +83,26 @@ The node publishes `/cmd_vel` and subscribes to:
 - `~camera_launch_cmd` default empty
 - `~shutdown_on_stop` default `true`
 
+Pipeline-specific default differences in `realtime_uninavid_ros_pipeline.py`:
+
+- `~action_motion_s` default `1.0`
+- `~forward_distance_m` default `0.25`
+- `~turn_angle_deg` default `30.0`
+- `~camera_decode_max_hz` default `5.0`
+- `~min_inference_request_period_s` default `0.0`
+- `~still_frame_wait_timeout_s` default `0.25`
+- `~distance_tolerance_m`, `~distance_stop_lead_m`, `~turn_tolerance_deg`, and `~turn_stop_lead_deg` default `0.0`
+
+Pipeline behavior:
+
+- The first inference seeds the pending action queue.
+- Each action is controlled as one unit: forward `0.25m` in `1.0s`, or turn `30deg` in `1.0s`, unless speed or unit parameters are overridden.
+- After an action finishes, the node briefly publishes zero velocity for `~post_action_settle_s`, captures one fresh still frame, and submits that copied frame to the inference worker.
+- The robot does not wait for that inference if there are queued actions. It continues with the remaining queue after the still-frame capture window.
+- Each inference request records the completed-action count as an action anchor. When the result returns, actions that correspond to already completed or currently executing action slots are discarded.
+- The remaining predicted actions replace the current pending queue. The currently running action is not interrupted.
+- A leading `stop` after stale-action trimming stops immediately when idle, or is queued to stop after the current action when moving.
+
 Preprocess behavior:
 
 - Recommended (default): `~resize_before_model:=false`, keep raw frame input and let official `image_processor.preprocess` do resize + center crop.
@@ -82,10 +113,11 @@ Default speeds are derived from the target duration:
 - forward speed: `forward_distance_m / action_motion_s`
 - turn speed: `turn_angle_deg / action_motion_s`
 
-The node executes one atomic action at a time, but keeps a pending action queue
-from Uni-NaVid's four-action prediction. After each completed action it requests
-a new inference after stop-settle, and requires a newer frame than the pre-stop
-frame to reduce blur. A leading `stop` prediction interrupts immediately.
+The serial runner executes one atomic action at a time, but keeps a pending
+action queue from Uni-NaVid's four-action prediction. After each completed
+action it requests a new inference after stop-settle, and requires a newer frame
+than the pre-stop frame to reduce blur. A leading `stop` prediction interrupts
+immediately.
 
 Debug behavior:
 
