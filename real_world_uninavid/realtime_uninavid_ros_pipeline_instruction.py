@@ -866,7 +866,7 @@ class UniNaVidInstructionPipelineNode:
         self.action_motion_s = float(rospy.get_param("~action_motion_s", 1.0))
         self.post_action_settle_s = float(rospy.get_param("~post_action_settle_s", 0.2))
         self.forward_distance_m = float(rospy.get_param("~forward_distance_m", 0.25))
-        self.turn_angle_deg = float(rospy.get_param("~turn_angle_deg", 30.0))
+        self.turn_angle_deg = float(rospy.get_param("~turn_angle_deg", 25.0))
         self.forward_speed_mps = float(
             rospy.get_param(
                 "~forward_speed_mps",
