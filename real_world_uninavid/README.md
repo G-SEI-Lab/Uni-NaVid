@@ -32,6 +32,19 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
 ```
 
+指令服务式流水线运行器。该版本启动后只加载模型和相机，不自动推理、不自动运动；收到 `/uninavid/instruction` 后才开始新任务。收到新指令时，会停止当前任务、清空动作队列，并在推理线程中重置模型在线缓存后执行新任务：
+
+```bash
+python3 real_world_uninavid/realtime_uninavid_ros_pipeline_instruction.py \
+  _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
+```
+
+发送新任务指令：
+
+```bash
+rostopic pub /uninavid/instruction std_msgs/String "move forward to the target and stop."
+```
+
 可选的相机自动启动示例：
 
 ```bash
@@ -117,6 +130,8 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   非空时进入离线官方推理验证模式。
 - `~offline_eval_output_dir` 默认空：
   为空时输出到 `real_world_uninavid/offline_eval_output`。
+- `~instruction_topic` 默认 `/uninavid/instruction`：
+  仅用于 `realtime_uninavid_ros_pipeline_instruction.py`，用于接收新任务指令。
 
 `realtime_uninavid_ros_pipeline.py` 的流水线版本默认值差异：
 
