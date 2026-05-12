@@ -1717,7 +1717,6 @@ class UniNaVidInstructionPipelineNode:
             if self._image_buffer.latest(self.max_camera_age_s) is not None:
                 rospy.loginfo("[uninavid] camera frame received")
                 return
-            self._cmd_pub.publish(Twist())
             rate.sleep()
         rospy.logwarn(
             "[uninavid] no camera frame within %.1fs, inference will retry",
@@ -1756,12 +1755,16 @@ class UniNaVidInstructionPipelineNode:
         rate = rospy.Rate(max(self.loop_rate_hz, 1.0))
         while not rospy.is_shutdown():
             self._consume_inference()
-            if self.inference_only:
-                self._step_inference_only()
-                cmd = Twist()
-            else:
-                cmd = self._step_control()
-            self._cmd_pub.publish(cmd)
+            with self._lock:
+                should_publish_cmd = self._task_active
+
+            if should_publish_cmd:
+                if self.inference_only:
+                    self._step_inference_only()
+                    cmd = Twist()
+                else:
+                    cmd = self._step_control()
+                self._cmd_pub.publish(cmd)
 
             with self._lock:
                 if (
