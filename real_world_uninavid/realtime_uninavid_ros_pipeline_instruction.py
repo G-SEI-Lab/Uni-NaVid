@@ -484,6 +484,15 @@ class UniNaVidInferenceWorker:
         with self._lock:
             return self._busy or self._pending_request is not None
 
+    def cancel_pending(self, task_id: Optional[int] = None) -> bool:
+        with self._lock:
+            if self._pending_request is None:
+                return False
+            if task_id is not None and self._pending_request.task_id != task_id:
+                return False
+            self._pending_request = None
+            return True
+
     def latest_after(self, generation: int) -> Optional[InferenceResult]:
         with self._lock:
             if self._latest is not None and self._latest.generation > generation:
@@ -825,6 +834,7 @@ class UniNaVidInstructionPipelineNode:
         self.model_path = _resolve_repo_path(str(rospy.get_param("~model_path", DEFAULT_MODEL_PATH)))
         self.instruction = ""
         self.instruction_topic = str(rospy.get_param("~instruction_topic", "/uninavid/instruction"))
+        self.cancel_topic = str(rospy.get_param("~cancel_topic", "/uninavid/cancel"))
 
         self.camera_topic = str(rospy.get_param("~camera_topic", "/camera_down/color/image_raw"))
         self.camera_decode_max_hz = float(rospy.get_param("~camera_decode_max_hz", 5.0))
@@ -960,6 +970,7 @@ class UniNaVidInstructionPipelineNode:
             {
                 "model_path": self.model_path,
                 "instruction_topic": self.instruction_topic,
+                "cancel_topic": self.cancel_topic,
                 "camera_topic": self.camera_topic,
                 "camera_decode_max_hz": self.camera_decode_max_hz,
                 "cmd_vel_topic": self.cmd_vel_topic,
@@ -1022,10 +1033,11 @@ class UniNaVidInstructionPipelineNode:
         )
         self._worker.start()
         rospy.Subscriber(self.instruction_topic, String, self._instruction_cb, queue_size=10)
+        rospy.Subscriber(self.cancel_topic, Bool, self._cancel_cb, queue_size=10)
 
         rospy.loginfo(
             "[uninavid] ready camera=%s decode_max_hz=%.2f cmd=%s body_vel=%s gyro=%s "
-            "pipeline=true instruction_topic=%s period=%.2fs motion=%.2fs settle=%.2fs still_wait=%.2fs "
+            "pipeline=true instruction_topic=%s cancel_topic=%s period=%.2fs motion=%.2fs settle=%.2fs still_wait=%.2fs "
             "forward=%.3fm@%.3fm/s turn=%.1fdeg@%.3frad/s resize=%s:%d debug=%s inference_only=%s "
             "cache_reset_interval=%d feat_cache_max_frames=%d long_feat_cache_max_tokens=%d",
             self.camera_topic,
@@ -1034,6 +1046,7 @@ class UniNaVidInstructionPipelineNode:
             self.body_velocity_topic,
             self.gyro_topic,
             self.instruction_topic,
+            self.cancel_topic,
             self.action_period_s,
             self.action_motion_s,
             self.post_action_settle_s,
@@ -1058,7 +1071,11 @@ class UniNaVidInstructionPipelineNode:
             rospy.logwarn(
                 "[uninavid] resize_before_model=true: this deviates from official offline_eval preprocessing"
             )
-        self._publish_state("waiting_for_instruction", instruction_topic=self.instruction_topic)
+        self._publish_state(
+            "waiting_for_instruction",
+            instruction_topic=self.instruction_topic,
+            cancel_topic=self.cancel_topic,
+        )
         if self.debug_save_enabled:
             rospy.loginfo(
                 "[uninavid] debug outputs: %s images=%s raw_images=%s image_interval=%d "
@@ -1145,11 +1162,73 @@ class UniNaVidInstructionPipelineNode:
             return
         self._start_new_task(instruction)
 
+    def _cancel_cb(self, msg: Bool) -> None:
+        if not bool(msg.data):
+            return
+        self._cancel_current_task("cancel signal received")
+
     def _publish_zero_command(self, repeats: int = 3) -> None:
         zero = Twist()
         for _ in range(max(repeats, 1)):
             self._cmd_pub.publish(zero)
             rospy.sleep(0.02)
+
+    def _reset_runtime_state_locked(self) -> None:
+        self._pending_actions.clear()
+        self._current_action = None
+        self._completed_action_count = 0
+        self._last_inference_generation = self._worker.latest_generation()
+        self._last_inference_request_time = 0.0
+        self._stop_requested = False
+        self._stop_time = None
+        self._settle_until = 0.0
+        self._settle_needs_inference = False
+        self._settle_capture_min_seq = 0
+        self._settle_frame_deadline = 0.0
+        self._next_action_not_before = 0.0
+        self._turn_run_abs_deg = 0.0
+        self._total_abs_turn_deg = 0.0
+
+    def _cancel_current_task(self, reason: str) -> None:
+        self._publish_zero_command()
+        with self._lock:
+            was_active = self._task_active or self._current_action is not None or bool(self._pending_actions)
+            task_id = self._task_id
+            self._task_active = False
+            self.instruction = ""
+            self._reset_runtime_state_locked()
+            self._task_start_monotonic = None
+
+        canceled_pending = self._worker.cancel_pending(task_id)
+        rospy.loginfo(
+            "[uninavid] task cancel requested active=%s task_id=%d pending_request_canceled=%s reason=%s",
+            str(was_active),
+            task_id,
+            str(canceled_pending),
+            reason,
+        )
+        self._publish_state(
+            "task_canceled",
+            task_id=task_id,
+            was_active=was_active,
+            pending_request_canceled=canceled_pending,
+            reason=reason,
+        )
+        self._publish_state(
+            "waiting_for_instruction",
+            instruction_topic=self.instruction_topic,
+            cancel_topic=self.cancel_topic,
+        )
+        self._debug.record_event(
+            {
+                "type": "task_canceled",
+                "task_id": task_id,
+                "was_active": was_active,
+                "pending_request_canceled": canceled_pending,
+                "reason": reason,
+                "ts": time.time(),
+            }
+        )
 
     def _start_new_task(self, instruction: str) -> None:
         self._publish_zero_command()
@@ -1159,20 +1238,7 @@ class UniNaVidInstructionPipelineNode:
             self.instruction = instruction
             self._task_active = True
             self._task_start_monotonic = time.monotonic()
-            self._pending_actions.clear()
-            self._current_action = None
-            self._completed_action_count = 0
-            self._last_inference_generation = self._worker.latest_generation()
-            self._last_inference_request_time = 0.0
-            self._stop_requested = False
-            self._stop_time = None
-            self._settle_until = 0.0
-            self._settle_needs_inference = False
-            self._settle_capture_min_seq = 0
-            self._settle_frame_deadline = 0.0
-            self._next_action_not_before = 0.0
-            self._turn_run_abs_deg = 0.0
-            self._total_abs_turn_deg = 0.0
+            self._reset_runtime_state_locked()
             min_seq = self._image_buffer.latest_seq()
 
         rospy.loginfo("[uninavid] new task_id=%d instruction=%r", task_id, instruction)
@@ -1681,7 +1747,11 @@ class UniNaVidInstructionPipelineNode:
 
     def run(self) -> int:
         self._wait_for_camera()
-        self._publish_state("waiting_for_instruction", instruction_topic=self.instruction_topic)
+        self._publish_state(
+            "waiting_for_instruction",
+            instruction_topic=self.instruction_topic,
+            cancel_topic=self.cancel_topic,
+        )
 
         rate = rospy.Rate(max(self.loop_rate_hz, 1.0))
         while not rospy.is_shutdown():

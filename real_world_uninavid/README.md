@@ -45,6 +45,12 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline_instruction.py \
 rostopic pub /uninavid/instruction std_msgs/String "move forward to the target and stop."
 ```
 
+取消当前任务并等待下一条指令：
+
+```bash
+rostopic pub /uninavid/cancel std_msgs/Bool "data: true"
+```
+
 可选的相机自动启动示例：
 
 ```bash
@@ -132,6 +138,8 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   为空时输出到 `real_world_uninavid/offline_eval_output`。
 - `~instruction_topic` 默认 `/uninavid/instruction`：
   仅用于 `realtime_uninavid_ros_pipeline_instruction.py`，用于接收新任务指令。
+- `~cancel_topic` 默认 `/uninavid/cancel`：
+  仅用于 `realtime_uninavid_ros_pipeline_instruction.py`，收到 `std_msgs/Bool` 的 `true` 后取消当前任务、停止并等待下一条指令。
 
 `realtime_uninavid_ros_pipeline.py` 的流水线版本默认值差异：
 
