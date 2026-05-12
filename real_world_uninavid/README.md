@@ -40,6 +40,38 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
   _instruction:="move forward to the target and stop."
 ```
 
+## 离线官方推理验证
+
+两个真机部署脚本都支持离线验证模式。传入 `~offline_eval_dir` 后，脚本会跳过相机订阅、运动控制和真机控制循环，改为按 `offline_eval_uninavid.py` 的方式读取文件夹图像、逐帧推理、绘制动作箭头并保存 GIF。
+
+输入目录结构需要与官方离线评估一致：
+
+- `path/to/test_case/images/*.jpg`
+- `path/to/test_case/instruction.json`
+
+串行脚本离线验证：
+
+```bash
+python3 real_world_uninavid/realtime_uninavid_ros.py \
+  _offline_eval_dir:=path/to/test_case \
+  _offline_eval_output_dir:=path/to/output \
+  _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
+```
+
+流水线脚本离线验证：
+
+```bash
+python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
+  _offline_eval_dir:=path/to/test_case \
+  _offline_eval_output_dir:=path/to/output \
+  _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
+```
+
+离线验证输出：
+
+- `result.gif`：与官方后处理一致的动作箭头动图。
+- `result.jsonl`：每帧的 step、推理耗时、动作列表和轨迹结果，便于对比两份真机脚本和官方脚本输出。
+
 节点发布 `/cmd_vel`，并订阅：
 
 - `/camera_up/color/image_raw`
@@ -81,6 +113,10 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
 - `~debug_fsync_events` 默认 `true`
 - `~camera_launch_cmd` 默认空
 - `~shutdown_on_stop` 默认 `true`
+- `~offline_eval_dir` 默认空：
+  非空时进入离线官方推理验证模式。
+- `~offline_eval_output_dir` 默认空：
+  为空时输出到 `real_world_uninavid/offline_eval_output`。
 
 `realtime_uninavid_ros_pipeline.py` 的流水线版本默认值差异：
 

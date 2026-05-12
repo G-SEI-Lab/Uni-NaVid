@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Deque, List, Optional
 
 import cv2  # type: ignore
+import imageio
 import rospy
 import torch
 from cv_bridge import CvBridge
@@ -29,7 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from offline_eval_uninavid import UniNaVid_Agent  # noqa: E402
+from offline_eval_uninavid import (  # noqa: E402
+    UniNaVid_Agent,
+    draw_traj_arrows_fpv,
+    get_sorted_images,
+    get_traj_data,
+)
 
 
 RAD2DEG = 180.0 / math.pi
@@ -96,6 +102,66 @@ def _resolve_repo_path(value: str) -> str:
     if path.is_absolute():
         return str(path)
     return str((REPO_ROOT / path).resolve())
+
+
+def _resolve_output_dir(value: str) -> Path:
+    if not value.strip():
+        return REPO_ROOT / "real_world_uninavid" / "offline_eval_output"
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
+def _run_offline_eval_mode(model_path: str, recording_dir: str, output_dir: str) -> int:
+    recording_path = Path(recording_dir).expanduser()
+    if not recording_path.is_absolute():
+        recording_path = (REPO_ROOT / recording_path).resolve()
+    output_path = _resolve_output_dir(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    agent = UniNaVid_Agent(model_path)
+    agent.reset()
+
+    images = get_sorted_images(str(recording_path))
+    instruction = get_traj_data(str(recording_path))
+    print(f"Total {len(images)} images")
+    if not images:
+        raise RuntimeError(f"no .jpg images found under {recording_path / 'images'}")
+
+    result_vis_list = []
+    result_jsonl = output_path / "result.jsonl"
+    with result_jsonl.open("w", encoding="utf-8") as f:
+        for step_count, image in enumerate(images, start=1):
+            t_s = time.time()
+            result = agent.act({"instruction": instruction, "observations": image})
+            inference_s = time.time() - t_s
+
+            actions = list(result.get("actions", []))
+            print("step", step_count, "inference time", inference_s)
+
+            vis = draw_traj_arrows_fpv(image, actions, arrow_len=20)
+            result_vis_list.append(vis)
+            f.write(
+                json.dumps(
+                    {
+                        "step": step_count,
+                        "inference_s": inference_s,
+                        "actions": actions,
+                        "raw_actions": " ".join(str(action) for action in actions),
+                        "path": result.get("path"),
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    gif_path = output_path / "result.gif"
+    imageio.mimsave(str(gif_path), result_vis_list)
+    print(f"Saved {gif_path}")
+    print(f"Saved {result_jsonl}")
+    return 0
 
 
 def _stamp_or_now(stamp: rospy.Time) -> rospy.Time:
@@ -1502,6 +1568,12 @@ class UniNaVidPipelineNode:
 
 def main() -> None:
     rospy.init_node("uninavid_realtime_pipeline_controller")
+    offline_eval_dir = str(rospy.get_param("~offline_eval_dir", "")).strip()
+    if offline_eval_dir:
+        model_path = _resolve_repo_path(str(rospy.get_param("~model_path", DEFAULT_MODEL_PATH)))
+        output_dir = str(rospy.get_param("~offline_eval_output_dir", "")).strip()
+        sys.exit(_run_offline_eval_mode(model_path, offline_eval_dir, output_dir))
+
     node = UniNaVidPipelineNode()
     sys.exit(node.run())
 
