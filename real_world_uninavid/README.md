@@ -39,16 +39,16 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline_instruction.py \
   _model_path:=model_zoo/uninavid-7b-full-224-video-fps-1-grid-2
 ```
 
-发送新任务指令：
+通过 `real_world_uninavid/new_task.sh` 发布新任务指令：
 
 ```bash
-rostopic pub /uninavid/instruction std_msgs/String "move forward to the target and stop."
+bash real_world_uninavid/new_task.sh "move forward to the target and stop."
 ```
 
-取消当前任务并等待下一条指令：
+通过 `real_world_uninavid/stop_task.sh` 停止当前任务并等待下一条指令：
 
 ```bash
-rostopic pub /uninavid/cancel std_msgs/Bool "data: true"
+bash real_world_uninavid/stop_task.sh
 ```
 
 可选的相机自动启动示例：
