@@ -2,16 +2,183 @@
 
 本目录包含用于在机器狗上运行 Uni-NaVid 的在线部署脚本。
 
+## 环境配置
+
+真机部署端建议使用 Jetson AGX Orin 上的 ROS1 环境运行本目录脚本。当前脚本同时依赖 ROS Python 包（`rospy`、`cv_bridge`、消息类型）和 Uni-NaVid 的 PyTorch 推理栈，因此不要直接照根目录 README 在 Jetson 上执行带依赖解析的 `pip install -e .`，否则容易把 NVIDIA Jetson 版 PyTorch 或 ROS 绑定覆盖掉。
+
+### 1. 系统与 ROS
+
+Orin 侧使用 Ubuntu 20.04 + ROS Noetic。若设备上已经有 ROS 工作空间，只需要确认每个终端都 source 了 ROS 和工作空间：
+
+```bash
+source /opt/ros/noetic/setup.bash
+```
+
+基础系统依赖：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  git git-lfs python3-pip python3-venv python3-dev build-essential cmake \
+  python3-opencv python3-numpy \
+  ros-noetic-cv-bridge ros-noetic-image-transport \
+  ros-noetic-sensor-msgs ros-noetic-geometry-msgs ros-noetic-std-msgs
+```
+
+如果相机使用 RealSense ROS 驱动，还需要安装或编译 `realsense2_camera`，并确保发布的话题与 `~camera_topic` 一致。脚本默认订阅：
+
+```text
+/camera_down/color/image_raw
+```
+
+### 2. Python 推理环境
+
+当前实机环境使用系统 Python 3.8 创建普通 venv，再通过 venv 内的 `.pth` 文件引入 ROS Python、系统 OpenCV 和用户级 Python 包路径。已验证环境的 `pyvenv.cfg` 中 `include-system-site-packages = false`。
+
+`real_world_uninavid/env_exports/` 中保留了这套环境的导出结果，以供参考调试：
+
+- `requirements-jetson-venv.txt`：venv 内本地安装的 pip 包，复现环境时主要安装这个文件。
+- `requirements-jetson-full-visible.txt`：`.pth` 生效后 Python 实际能看到的完整包列表，用于排查来源。
+- `apt-ros-opencv.txt`：ROS、系统 OpenCV、系统 numpy 等 apt 包版本。
+
+创建 venv：
+
+```bash
+python3 -m venv ~/venvs/uninavid-ros-py38
+source ~/venvs/uninavid-ros-py38/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
+写入外部 Python 路径：
+
+```bash
+cat > ~/venvs/uninavid-ros-py38/lib/python3.8/site-packages/uninavid_external_paths.pth <<'EOF'
+/opt/ros/noetic/lib/python3/dist-packages
+/usr/lib/python3/dist-packages
+/home/ubuntu/.local/lib/python3.8/site-packages
+EOF
+```
+
+路径作用：
+
+- `/opt/ros/noetic/lib/python3/dist-packages`：提供 `rospy`、`cv_bridge`、ROS message 包。
+- `/usr/lib/python3/dist-packages`：提供 apt 安装的系统 `cv2` / `python3-opencv`、系统 `numpy` 等。
+- `/home/ubuntu/.local/lib/python3.8/site-packages`：当前系统中的用户级 Python 包；已验证环境中的 Jetson PyTorch 从外部可见路径进入。
+
+安装 venv 内 pip 包：
+
+```bash
+cd /home/ubuntu/workspace_ros1/Uni-NaVid
+source /opt/ros/noetic/setup.bash
+source ~/venvs/uninavid-ros-py38/bin/activate
+
+python -m pip install -r real_world_uninavid/env_exports/requirements-jetson-venv.txt
+```
+
+`real_world_uninavid` 中的脚本会自动把仓库根目录加入 `sys.path`，因此从仓库目录运行这些脚本时不强制需要安装本仓库。若需要在仓库外部直接 `import uninavid`，再执行：
+
+```bash
+python -m pip install -e . --no-deps
+```
+
+不要安装 `opencv-python` / `opencv-python-headless`，否则可能和 ROS `cv_bridge` 使用的系统 OpenCV 冲突。脚本中保持 `import cv2` 在 `from cv_bridge import CvBridge` 之前，用来优先加载系统 OpenCV。
+
+确认关键包来源和 CUDA：
+
+```bash
+python - <<'PY'
+import cv2
+import torch
+import rospy
+from cv_bridge import CvBridge
+import cv_bridge
+
+print("torch:", torch.__version__, torch.__file__)
+print("torch cuda:", torch.cuda.is_available(), getattr(torch.version, "cuda", None))
+print("cv2:", cv2.__version__, cv2.__file__)
+print("rospy:", rospy.__file__)
+print("cv_bridge:", cv_bridge.__file__)
+PY
+```
+
+### 3. 模型文件
+
+模型目录建议放在仓库根目录下：
+
+```text
+Uni-NaVid/
+├── model_zoo/
+│   ├── eva_vit_g.pth
+│   └── uninavid-7b-full-224-video-fps-1-grid-2/
+└── uninavid/
+    └── processor/clip-patch14-224/
+```
+
+运行时通过 `~model_path` 指向 finetuned 模型目录。`eva_vit_g.pth` 的路径需要与模型配置中的 `mm_vision_tower` 一致，否则加载模型时会报 `Not find vision tower`。
+
+### 4. ZSL 机器狗控制桥
+
+ZSL SDK server 运行在 Ubuntu 22.04 Docker 容器内，Orin 外部 ROS1 环境运行 `client_in_orin.py`。本目录的 `2-start_control_zsl.sh` 默认假设已经存在名为 `zsl_server` 的容器：
+
+```bash
+docker start zsl_server
+python3 /home/ubuntu/workspace_ros1/elevator-robot/scripts/zsibot/client_in_orin.py
+```
+
+若部署路径不同，需要同步修改 `2-start_control_zsl.sh` 中的 `client_in_orin.py` 路径。ZSL bridge 正常后应发布：
+
+```text
+/zsl/body_velocity
+/zsl/body_gyro
+```
+
+### 5. 环境自检
+
+在仓库根目录、已激活 venv 且已 source ROS 的终端执行：
+
+```bash
+python - <<'PY'
+import cv2
+import imageio
+import rospy
+import torch
+from cv_bridge import CvBridge
+from uninavid.model.builder import load_pretrained_model
+
+print("torch:", torch.__version__, "cuda:", torch.cuda.is_available())
+print("cv2:", cv2.__version__)
+print("rospy/cv_bridge: ok")
+print("uninavid import: ok")
+PY
+```
+
+ROS 侧检查：
+
+```bash
+rostopic hz /camera_down/color/image_raw
+rostopic echo -n 1 /zsl/body_velocity
+rostopic echo -n 1 /zsl/body_gyro
+```
+
+实机推理前建议切到 Orin 50W模式；
+在智身钢蹦L1四足机器狗上，超过50W可能会导致Orin断电宕机；
+50W模式下，uninavid单帧推理时长约1.2秒。
+
+```bash
+sudo nvpmodel -m 3
+sudo jetson_clocks
+```
+
 ## 前置条件
 
 除非通过 `~camera_launch_cmd` 让本节点自动启动相机，否则需要在本节点外部先启动以下服务：
 
 ```bash
 # ZSL SDK server in Docker, then ROS bridge on Orin.
-python3 tmp/elevator-robot/scripts/zsibot/client_in_orin.py
+bash real_world_uninavid/2-start_control_zsl.sh
 
 # RealSense ROS driver publishing:
-# /camera_up/color/image_raw
+# /camera_down/color/image_raw
 ```
 
 ## 运行
@@ -93,7 +260,7 @@ python3 real_world_uninavid/realtime_uninavid_ros_pipeline.py \
 
 节点发布 `/cmd_vel`，并订阅：
 
-- `/camera_up/color/image_raw`
+- `/camera_down/color/image_raw`
 - `/zsl/body_velocity`
 - `/zsl/body_gyro`
 - 当 `~use_estop:=true` 时订阅 `/elevator/e_stop`
