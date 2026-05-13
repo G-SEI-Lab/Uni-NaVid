@@ -1,0 +1,8 @@
+python3-numpy=1:1.17.4-5ubuntu3.1
+python3-opencv=4.2.0+dfsg-5
+ros-noetic-cv-bridge=1.16.2-1focal.20250520.014329
+ros-noetic-geometry-msgs=1.13.2-1focal.20250426.025510
+ros-noetic-image-transport=1.12.1-1focal.20250520.005306
+ros-noetic-sensor-msgs=1.13.2-1focal.20250520.003738
+ros-noetic-std-msgs=0.5.14-1focal.20250426.023608
+ros-noetic-vision-opencv=1.16.2-1focal.20250520.073617
