@@ -421,12 +421,24 @@ class UniNaVidInferenceWorker:
         self._max_frame_age_s = max_frame_age_s
         self._max_actions = max_actions
         self._request_frame_wait_timeout_s = request_frame_wait_timeout_s
-        self._resize_before_model = resize_before_model
+        if resize_before_model:
+            rospy.logwarn(
+                "[uninavid] worker ignoring resize_before_model=true; using raw observations for official preprocessing"
+            )
+        self._resize_before_model = False
         self._model_input_size = max(model_input_size, 1)
-        self._cache_reset_interval = max(cache_reset_interval, 0)
+        if (
+            cache_reset_interval > 0
+            or feat_cache_max_frames > 0
+            or long_feat_cache_max_tokens > 0
+        ):
+            rospy.logwarn(
+                "[uninavid] worker ignoring cache trim/reset settings; preserving official online inference cache"
+            )
+        self._cache_reset_interval = 0
         self._empty_cuda_cache_every = max(empty_cuda_cache_every, 0)
-        self._feat_cache_max_frames = max(feat_cache_max_frames, 0)
-        self._long_feat_cache_max_tokens = max(long_feat_cache_max_tokens, 0)
+        self._feat_cache_max_frames = 0
+        self._long_feat_cache_max_tokens = 0
         self._memory_log_interval = max(memory_log_interval, 0)
         self._official_short_side, self._official_crop = self._resolve_official_image_size()
 
@@ -907,13 +919,29 @@ class UniNaVidInstructionPipelineNode:
         self.max_runtime_s = float(rospy.get_param("~max_runtime_s", 0.0))
         self.max_inferences = int(rospy.get_param("~max_inferences", 0))
 
-        self.resize_before_model = bool(rospy.get_param("~resize_before_model", False))
+        requested_resize_before_model = bool(rospy.get_param("~resize_before_model", False))
+        if requested_resize_before_model:
+            rospy.logwarn(
+                "[uninavid] ignoring resize_before_model=true; real-time inference keeps official offline_eval preprocessing"
+            )
+        self.resize_before_model = False
         self.model_input_size = int(rospy.get_param("~model_input_size", 224))
 
-        self.cache_reset_interval = int(rospy.get_param("~cache_reset_interval", 0))
+        requested_cache_reset_interval = int(rospy.get_param("~cache_reset_interval", 0))
+        requested_feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 0))
+        requested_long_feat_cache_max_tokens = int(rospy.get_param("~long_feat_cache_max_tokens", 0))
+        if (
+            requested_cache_reset_interval > 0
+            or requested_feat_cache_max_frames > 0
+            or requested_long_feat_cache_max_tokens > 0
+        ):
+            rospy.logwarn(
+                "[uninavid] ignoring cache trim/reset params; real-time inference preserves official online history"
+            )
+        self.cache_reset_interval = 0
         self.empty_cuda_cache_every = int(rospy.get_param("~empty_cuda_cache_every", 0))
-        self.feat_cache_max_frames = int(rospy.get_param("~feat_cache_max_frames", 0))
-        self.long_feat_cache_max_tokens = int(rospy.get_param("~long_feat_cache_max_tokens", 0))
+        self.feat_cache_max_frames = 0
+        self.long_feat_cache_max_tokens = 0
         self.memory_log_interval = int(rospy.get_param("~memory_log_interval", 1))
 
         self.debug_save_enabled = bool(rospy.get_param("~debug_save_enabled", True))
